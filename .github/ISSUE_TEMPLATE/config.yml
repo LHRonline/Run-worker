@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/LHRonline/run-worker/blob/main/SECURITY.md
+    about: 请勿公开提交安全问题，按 SECURITY.md 私下报告
+  - name: 使用问题与讨论
+    url: https://github.com/LHRonline/run-worker/discussions
+    about: 配置渠道、免费额度、安装求助等，请先到 Discussions
+  - name: 贡献指南
+    url: https://github.com/LHRonline/run-worker/blob/main/CONTRIBUTING.md
+    about: 提交代码前先读分支模型、提交规范与 PR 检查清单

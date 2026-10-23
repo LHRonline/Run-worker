@@ -1,0 +1,99 @@
+name: Bug 报告
+description: 报告一个可复现的问题，帮助我们定位修复
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请先搜索是否已有相同 Issue。
+        安全问题请勿在此提交，请按 [SECURITY.md](https://github.com/LHRonline/run-worker/blob/main/SECURITY.md) 私下报告。
+        **请勿粘贴 API Key、完整家目录路径或含隐私的文件内容。**
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本号
+      description: 见「设置 → 关于」，或安装包文件名
+      placeholder: 例如 0.0.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - 其他（请在补充信息中说明）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题出现在哪个区域
+      multiple: true
+      options:
+        - 对话与流式输出
+        - Agent 路由 / 工具调用
+        - 模型渠道与 API
+        - MCP 连接器
+        - 定时任务
+        - 本地知识库
+        - 长期记忆
+        - 会话历史与导出
+        - 主题与界面
+        - 安装 / 卸载 / 更新
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 越具体越好，包含使用的 Agent、渠道与模型
+      placeholder: |
+        1. 选择「数据分析」Agent，渠道 OpenRouter 免费模型
+        2. 输入「把 D:\data 下的 xlsx 汇总」
+        3. 第三步工具调用后界面停在运行中
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 有报错文本请原样粘贴（去掉敏感信息）
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段（可选）
+      description: 位于 %APPDATA%\Run worker\logs\main-YYYY-MM-DD.log，只贴相关几行
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我已在最新版本上复现该问题
+          required: true
+        - label: 我已搜索过现有 Issue，没有重复
+          required: true
+        - label: 我确认贴出的内容不含 API Key 与隐私数据
+          required: true

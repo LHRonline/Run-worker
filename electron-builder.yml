@@ -1,0 +1,47 @@
+appId: com.runworker.desktop
+productName: Run worker
+copyright: Copyright © 2026 Run worker Team
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist-electron/**/*
+  - dist/renderer/**/*
+  - assets/icon.png
+  - package.json
+  - '!**/*.map'
+
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  publisherName: Run worker Team
+  legalTrademarks: Run worker
+  requestedExecutionLevel: asInvoker
+  artifactName: Run-worker-${version}-setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Run worker
+  menuCategory: false
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  include: build/installer.nsh
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  uninstallDisplayName: Run worker ${version}
+  artifactName: Run-worker-${version}-setup.${ext}
+
+publish: null
