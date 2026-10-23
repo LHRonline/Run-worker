@@ -197,7 +197,7 @@ ollama list
 | --- | --- | --- |
 | 连接超时 | 服务未启动 | 运行 `ollama serve`，或确认托盘图标在跑 |
 | `404 model not found` | 模型名不匹配/未 pull | `ollama list` 对照 |
-| 请求被代理拦截 | 系统代理接管了 `localhost` | 本地地址加入 no-proxy（0.0.3 起内置处理） |
+| 请求被代理拦截 | 系统代理接管了 `localhost` | 本地地址加入 no-proxy（后续版本内置处理） |
 | 工具调用乱参数 | 模型太小 | 换 7B 以上，或降低 `temperature` |
 
 ---

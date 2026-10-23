@@ -13,7 +13,7 @@
 Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一句目标，它自己判断该由哪个子 Agent 接手、该调哪些工具，然后**真的去执行**——写文件、跑命令、出图、生成 3D 资产、剪辑视频、查你的本地资料库。
 它不绑定单一厂商：DeepSeek、OpenRouter 免费模型、Groq、硅基流动、Ollama 本地，任何兼容 OpenAI 协议的接口都能接。默认开启省 token 策略与中文思考流式展示，日常轻量任务可以做到零成本。
 
-> 当前版本 **0.0.2**，MIT 协议开源。后续 0.0.3–0.0.5 为纯补丁版本，只做修复与兼容，不引入破坏性变更（见 [docs/PATCH-ROADMAP.md](docs/PATCH-ROADMAP.md)）。
+> 当前版本 **0.0.2**，MIT 协议开源。不知道从哪开始？直接看下面的 [3 分钟上手](#3-分钟上手)，或进 [docs/INSTALL.md](docs/INSTALL.md) 看完整安装教程。
 
 ---
 
@@ -179,17 +179,17 @@ flowchart TD
 - **删除单个对话**：左侧会话列表右键 → 删除；**清空全部历史**：设置 → 数据 → 清空对话（`conv:clear`）。
 - **清空记忆**：设置 → 记忆 → 全部清除（`memory:clear`）；单条可点垃圾桶。**重置设置**：设置 → 通用 → 恢复默认（`settings:reset`），不会删对话。
 
-## 路线图
+## 使用教程
 
-| 版本 | 状态 | 主题 |
-| --- | --- | --- |
-| 0.0.1 | ✅ 已发布（2026-10-23） | 首个可用版本：多 Agent + 工具 + MCP + 知识库 + 定时任务 |
-| 0.0.2 | ✅ 已发布（2026-10-23） | 安全与测试补丁：API Key 加密存储、命令变体拦截、更新包 SHA-256、E2E 26 项 |
-| 0.0.3 | 预计 2 周后 | 稳定性与兼容性补丁：流式中断、中文路径、主题对比度、cron 跨月 |
-| 0.0.4 | 预计 1 个月 | 安全与权限补丁：审批记忆、文件写入边界 |
-| 0.0.5 | 预计 6 周 | 更新通道补丁：安装器签名校验、差分提示 |
+| 教程 | 内容 |
+| --- | --- |
+| [3 分钟上手](#3-分钟上手) | 配渠道 → 发第一句话 → 让 Agent 真的干活 |
+| [docs/INSTALL.md](docs/INSTALL.md) | 安装、静默安装 `/S /D=`、环境变量与目录布局 |
+| [docs/API.md](docs/API.md) | 渠道配置：免费路径、Key 获取、常见报错处理 |
+| [docs/AGENTS.md](docs/AGENTS.md) | 8 个 Agent 各自能做什么、什么时候手动指定 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 数据与配置文件放哪、怎么备份与清理 |
 
-补丁版本**不引入新功能、不改配置格式**，只修 Bug、提稳定性、走通更新链路。逐条清单见 [docs/PATCH-ROADMAP.md](docs/PATCH-ROADMAP.md)。
+版本变更历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -207,7 +207,7 @@ src/            源码
 ├─ renderer/    React 界面
 └─ shared/      三方共用契约 types / ipc / agents / presets / platform
 build/          NSIS 脚本与图标        assets/  README 横幅与图标
-docs/           架构、Agent、安装、API、补丁路线图
+docs/           安装、API、Agent、架构等使用教程
 scripts/        dev / preview / 资源处理   tests/  node:test 用例
 electron-builder.yml                   打包配置
 ```
@@ -233,7 +233,7 @@ electron-builder.yml                   打包配置
 - **加工具**：在 `src/main/tools/` 实现 `name/description/inputSchema/run`，注册进工具池；危险工具需在 `platform/permissions.ts` 里给风险等级。
 - **加 MCP**：设置 → MCP → 新增，填 `transport: stdio`（`command`+`args`）或 `http`（`url`+`headers`），连接成功后工具自动可见。
 
-更多见 [CONTRIBUTING.md](CONTRIBUTING.md)、[docs/API.md](docs/API.md)。
+想先学会用再动手改？从 [3 分钟上手](#3-分钟上手) 和 [docs/API.md](docs/API.md) 开始；贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## FAQ
 

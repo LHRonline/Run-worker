@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢建议。请先确认这不是 0.0.x 补丁版本的规划范围——补丁版本只修 Bug，不新增功能（见 [docs/PATCH-ROADMAP.md](https://github.com/LHRonline/run-worker/blob/main/docs/PATCH-ROADMAP.md)）。
+        感谢建议。提交前建议先读一遍使用教程（[README 的 3 分钟上手](https://github.com/LHRonline/run-worker#3-分钟上手) 与 [docs/API.md](https://github.com/LHRonline/run-worker/blob/main/docs/API.md)），确认这是能力缺口而不是使用方法问题。
 
   - type: dropdown
     id: kind
@@ -66,5 +66,5 @@ body:
     attributes:
       label: 确认
       options:
-        - label: 我已搜索过现有 Issue 与 roadmap，没有重复
+        - label: 我已搜索过现有 Issue，没有重复
           required: true

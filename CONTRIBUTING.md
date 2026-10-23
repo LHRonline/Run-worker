@@ -36,7 +36,7 @@ npm run dev
 规则：
 
 - 一个 PR 只做一件事，避免“顺手重构”。
-- 面向 0.0.x 的修复请**只修不增**：不改 `Settings` 结构、不新增 Agent（参见 [docs/PATCH-ROADMAP.md](docs/PATCH-ROADMAP.md)）。
+- 面向 0.0.x 的修复请**只修不增**：不改 `Settings` 结构、不新增 Agent、不引入破坏性变更。
 - 合并前先 rebase 到最新 `main`，保持线性历史。
 
 ---
@@ -84,7 +84,7 @@ Refs #42
 ```
 
 ```
-docs(patch-roadmap): 补充 0.0.4 权限判定修复清单
+docs(security): 补充命令白名单说明
 ```
 
 ```

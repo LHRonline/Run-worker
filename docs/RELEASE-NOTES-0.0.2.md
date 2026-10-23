@@ -23,10 +23,10 @@
 ## 已知限制（余项）
 
 - **无沙箱**：命令以当前用户权限真实执行，不是容器隔离（不在 0.0.x 范围）。
-- **安装包未签名**：Windows SmartScreen 会提示「未知发布者」，可点「更多信息 → 仍要运行」；代码签名在 0.0.5 补齐（本版已支持人工比对 SHA-256）。
+- **安装包未签名**：Windows SmartScreen 会提示「未知发布者」，可点「更多信息 → 仍要运行」；代码签名在后续版本补齐（本版已支持人工比对 SHA-256）。
 - **MCP 需自备服务器**：`stdio` 传输会以当前用户权限执行你填写的 `command`，请只添加信任的服务器。
 - **图像 / 视频 / 3D 需外部能力**：内置不含生成模型，需配置对应接口或 3D 生成类 MCP。
 
 ---
 
-完整变更见 [CHANGELOG.md](../CHANGELOG.md)；补丁计划见 [docs/PATCH-ROADMAP.md](PATCH-ROADMAP.md)。
+完整变更见 [CHANGELOG.md](../CHANGELOG.md)；安装与使用教程见 [INSTALL.md](INSTALL.md) 与 [API.md](API.md)。
