@@ -3,9 +3,11 @@
  *
  * 设计要点：
  * 1. 先按 && || ; | 换行 单独 & 拆成「段」，逐段判定后取最高风险，避免 `ls && rm -rf /` 绕过；
- * 2. 匹配前归一化（小写、压缩空白、去引号），降低大小写/空格绕过；
+ * 2. 匹配前归一化（小写、压缩空白、去引号），降低大小写/空格绕过（`RM  -RF`、多空格均已覆盖）；
  * 3. denyPatterns 命中直接拒绝；
- * 4. 风险等级只描述危害，是否需确认交给 approvalMode 决定。
+ * 4. 内置变体模式：覆盖 PowerShell 别名（ri）、rimraf、find -delete、shred、
+ *    WMIC delete、.NET Delete、物理设备写入、git clean 等常见绕过写法；
+ * 5. 风险等级只描述危害，是否需确认交给 approvalMode 决定。
  */
 import * as path from 'node:path';
 import type { CommandVerdict, PermissionGuard } from '../../shared/platform';
@@ -16,14 +18,22 @@ type Risk = 'low' | 'medium' | 'high';
 /** 高危特征：递归删除 / 注册表 / 格式化 / 关机 / 远程脚本直通 / 提权 */
 const HIGH_RULES: { re: RegExp; reason: string }[] = [
   { re: /\brm\s+(-{1,2}[a-z-]+\s+)*-{1,2}[a-z]*[rf][a-z]*\b/, reason: '递归或强制删除文件' },
-  { re: /\b(rd|rmdir)\s+\/[a-z]*[sq][a-z]*\b/, reason: 'Windows 递归删除目录' },
+  { re: /\brimraf\b/, reason: '递归删除目录（rimraf）' },
+  { re: /\bri\s+-{1,2}[a-z]*[rf]/, reason: '递归删除（PowerShell 别名 ri）' },
+  { re: /\b(rd|rmdir|erase)\s+\/[a-z]*[sq][a-z]*\b/, reason: 'Windows 递归删除目录' },
   { re: /\bdel\s+\/[a-z]*[sqf][a-z]*\b/, reason: 'Windows 静默强制删除' },
   { re: /\bremove-item\b.*-recurse/, reason: 'PowerShell 递归删除' },
-  { re: /\b(rm|del|erase|remove-item)\b.*(\*|\/[a-z]*\*)/, reason: '通配符批量删除' },
+  { re: /\bfind\s+\S+.*\s-delete\b/, reason: 'find -delete 批量删除文件' },
+  { re: /\bshred\b/, reason: '覆写销毁文件' },
+  { re: /\bgit\s+clean\s+-[a-z]*[fdx]/, reason: 'git clean 删除未跟踪文件' },
+  { re: /\bwmic\b.*\bdelete\b/, reason: 'WMIC 删除（进程/服务等）' },
+  { re: /system\.io\.(file|directory)\]?::\s*delete|\]\.delete\(.*true\s*\)/, reason: '通过 .NET 接口递归删除' },
+  { re: /\b(rm|del|erase|remove-item|ri)\b.*(\*|\/[a-z]*\*)/, reason: '通配符批量删除' },
   { re: /\bformat(\.com)?\s+[a-z]:/, reason: '格式化磁盘' },
   { re: /\bmkfs(\.|\s)/, reason: '格式化文件系统' },
   { re: /\bdiskpart\b/, reason: '磁盘分区操作' },
   { re: /\bdd\s+if=/, reason: '裸设备写入' },
+  { re: /\\\\\.\\(physicaldrive|harddiskvolume)/, reason: '写入物理磁盘设备' },
   { re: /\breg\s+(add|delete|import|restore)\b/, reason: '修改注册表' },
   { re: /\b(set|new)-itemproperty\b.*(hklm|hkcu|hkey_)/, reason: '修改注册表' },
   { re: /\bregedit\b.*(\/s|\/import)\b/, reason: '批量导入注册表' },
@@ -61,6 +71,7 @@ const MEDIUM_RULES: { re: RegExp; reason: string }[] = [
   { re: /\b(npm|pnpm|yarn|node|npx|python|python3|py|go|cargo|dotnet|java|javac|ruby|php|tsc)\b/, reason: '执行程序或脚本' },
   { re: /\bdocker\s+(run|build|rm|exec|push)\b/, reason: '容器操作' },
   { re: /\b(kill|taskkill|stop-process)\b/, reason: '终止进程' },
+  { re: /\btruncate\s+-s\s*0/, reason: '清空文件内容' },
   { re: /\b(ssh|scp|sftp|telnet|rsync)\b/, reason: '远程连接或传输' },
   { re: /\bchmod\b|\bchown\b|\bicacls\b|\battrib\b.*[+-][rhs]/, reason: '修改文件权限属性' },
   { re: /\bgit\s+config\b/, reason: '修改 Git 配置' },

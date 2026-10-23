@@ -26,6 +26,28 @@ const userData = path.join(os.tmpdir(), `runworker-e2e-${stamp}`);
 fs.mkdirSync(userData, { recursive: true });
 app.setPath('userData', userData);
 
+// F4 预置：在 userData 里放一个已到期的 once 任务，验证调度器 ticker 补跑路径。
+// 必须在 require 主进程之前落盘，调度器构造时才会加载到。
+const seedTasksDir = path.join(userData, 'tasks');
+fs.mkdirSync(seedTasksDir, { recursive: true });
+fs.writeFileSync(
+  path.join(seedTasksDir, 'tasks.json'),
+  JSON.stringify([
+    {
+      id: 'e2e-task-ticker',
+      name: 'E2E ticker 补跑',
+      prompt: '回复一个字：好',
+      agentId: 'orchestrator',
+      kind: 'once',
+      runAt: Date.now() - 60_000,
+      enabled: true,
+      createdAt: Date.now() - 120_000,
+      indexResult: false,
+    },
+  ]),
+  'utf8',
+);
+
 // 以「脚本」方式启动时 appPath=脚本目录、version=Electron 版本，
 // 这里还原 `electron .` 的真实取值，避免 A 断言读到 Electron 版本号。
 Object.defineProperty(app, 'getAppPath', { configurable: true, value: () => ROOT });
@@ -259,7 +281,7 @@ async function main() {
       return boot.settings.providers.map((p) => p.id).join(',');
     });
 
-    await step("A4 app.version === '0.0.1'", 'src/main/env.ts:75 createAppInfo / src/main/index.ts:67', async () => {
+    await step("A4 app.version 与 package.json 一致", 'src/main/env.ts:75 createAppInfo / src/main/index.ts:67', async () => {
       assert(boot.app && boot.app.version === pkg.version, `期望 ${pkg.version}，实际 ${boot.app && boot.app.version}`);
       assert(typeof boot.app.electron === 'string' && boot.app.electron.length > 0, 'app.electron 为空');
       assert(typeof boot.app.userData === 'string' && boot.app.userData.length > 0, 'app.userData 为空');
@@ -301,6 +323,40 @@ async function main() {
     const reloaded = await js(win, 'window.runworker.settings.get()');
     assert(reloaded.appearance.theme === 'light', `重载后 theme=${reloaded.appearance.theme}（期望 light）`);
     return `theme=${reloaded.appearance.theme}`;
+  });
+
+  await step('B3 API Key 落盘为密文（safeStorage），内存态保持明文', 'src/main/store.ts setSecretsCodec / src/main/index.ts initSecretsCodec', async () => {
+    const testKey = 'sk-e2e-encryption-check-001';
+    // 给第一个服务商临时填一个 Key（providers 整体替换）
+    const patched = await js(
+      win,
+      `window.runworker.settings.get().then((s) => {
+         const providers = s.providers.map((p, i) => (i === 0 ? { ...p, apiKey: ${JSON.stringify(testKey)} } : p));
+         return window.runworker.settings.update({ providers });
+       })`,
+    );
+    assert(patched && Array.isArray(patched.providers), 'settings.update 未返回 providers');
+    assert(patched.providers[0].apiKey === testKey, 'IPC 读回的 Key 应为明文（内存态无感知）');
+
+    // 直接读盘验证：settings.json 里不得出现明文 Key
+    const settingsFile = path.join(userData, 'settings.json');
+    assert(fs.existsSync(settingsFile), `settings.json 不存在：${settingsFile}`);
+    const raw = fs.readFileSync(settingsFile, 'utf8');
+    assert(!raw.includes(testKey), '明文 Key 出现在 settings.json，加密存储未生效');
+    assert(/enc:v1:/.test(raw), 'settings.json 中未发现 enc:v1: 密文前缀（safeStorage 未启用或未迁移）');
+
+    // 清理：把 Key 还原为空，避免影响后续演示模式判定
+    const restored = await js(
+      win,
+      `window.runworker.settings.get().then((s) => {
+         const providers = s.providers.map((p, i) => (i === 0 ? { ...p, apiKey: '' } : p));
+         return window.runworker.settings.update({ providers });
+       })`,
+    );
+    assert(restored.providers[0].apiKey === '', '清理失败：Key 未还原为空');
+    const rawAfter = fs.readFileSync(settingsFile, 'utf8');
+    assert(!rawAfter.includes(testKey), '清理后明文 Key 仍残留');
+    return '落盘=enc:v1:*，内存=明文，清理完成';
   });
 
   /* ------------------------------ C. 演示模式对话 ------------------------------ */
@@ -365,9 +421,8 @@ async function main() {
     return `messages=${conv.messages.length} title=${conv.title}`;
   });
 
-  /* ------------------------------ C3~C5. 自动路由语义 ------------------------------ */
-  // 注意：trace 三态（自动路由/路由判定/手动指定）只在「真实模型路径」写入，
-  // 演示模式只发 run:routing 事件，因此这里断言事件 + 会话基线，不断言 trace。
+  /* ------------------------------ C3~C7. 自动路由语义与 trace 三态 ------------------------------ */
+  // C6/C7 验证 trace 三态（自动路由/路由判定/手动指定）：演示模式与真实路径同构，全部落 conv.trace。
 
   let route1 = null;
 
@@ -431,6 +486,44 @@ async function main() {
     assert(conv, 'conversations.get 返回空');
     assert(conv.agentId === 'orchestrator', `第二轮后会话基线 agentId=${conv.agentId}（期望仍为 orchestrator）`);
     return `第二条 orchestrator → ${routing.to}，基线仍 orchestrator`;
+  });
+
+  await step('C6 演示模式 trace：自动路由与路由判定均落 conv.trace', 'src/main/chat/service.ts 演示分支 trace.push / conv.trace 落库', async () => {
+    assert(route1, 'C3 未成功执行，无法校验 trace');
+    // 「你好」不命中任何子 Agent 关键词 → 触发「路由判定」
+    const keep = await sendAndCollect('你好', route1.conversationId);
+    const conv = await js(win, `window.runworker.conversations.get(${JSON.stringify(route1.conversationId)})`);
+    assert(conv, 'conversations.get 返回空');
+    const actions = (conv.trace ?? []).map((t) => t.action);
+    assert(
+      actions.includes('自动路由'),
+      `trace 中没有「自动路由」。已有 actions：${actions.join(',') || '（空）'}`,
+    );
+    assert(
+      actions.includes('路由判定'),
+      `「你好」未产生「路由判定」trace。已有 actions：${actions.join(',')}`,
+    );
+    const routed = (conv.trace ?? []).find((t) => t.action === '自动路由');
+    assert(
+      /orchestrator → \w+/.test(String(routed?.detail ?? '')),
+      `自动路由 detail 格式异常：${routed && routed.detail}`,
+    );
+    return `trace actions：${[...new Set(actions)].join(' / ')}`;
+  });
+
+  await step('C7 手动指定 Agent 时 trace 记录「手动指定」并写会话基线', 'src/main/chat/service.ts manual 分支 / conv.agentId 写回', async () => {
+    // 用全新会话显式指定 agentId=image
+    const sent = await js(win, 'window.runworker.chat.send({ text: "帮我画一张海报", agentId: "image" })');
+    assert(sent && sent.runId, 'send() 未返回 runId');
+    await collectRunEvents(sent.runId, 25_000);
+    const conv = await js(win, `window.runworker.conversations.get(${JSON.stringify(sent.conversationId)})`);
+    assert(conv, 'conversations.get 返回空');
+    const actions = (conv.trace ?? []).map((t) => t.action);
+    assert(actions.includes('手动指定'), `trace 中没有「手动指定」。已有 actions：${actions.join(',') || '（空）'}`);
+    assert(conv.agentId === 'image', `手动模式应写会话基线 agentId=${conv.agentId}（期望 image）`);
+    const stepManual = (conv.trace ?? []).find((t) => t.action === '手动指定');
+    assert(stepManual.agentId === 'image', `手动指定 trace 的 agentId=${stepManual.agentId}（期望 image）`);
+    return `trace 记录「手动指定」，基线=${conv.agentId}`;
   });
 
   /* ------------------------------ D. 中断 ------------------------------ */
@@ -573,6 +666,24 @@ async function main() {
     return `status=success，history ${before} → ${history.length}，lastStatus=success，耗时 ${ms}ms`;
   });
 
+  /* ------------------------------ F4. ticker 补跑 ------------------------------ */
+  // 任务在文件顶部（require 主进程之前）预置进 <userData>/tasks/tasks.json：
+  // once、runAt 已过期、从未执行 → 启动校准应保留该 nextRunAt，start() 后 3 秒的首次 tick 补跑。
+  await step('F4 调度器 ticker 补跑已到期的预置任务并落历史', 'tests/e2e/harness.cjs 顶部预置 / src/main/platform/scheduler.ts tick + 启动校准', async () => {
+    const history = await js(win, 'window.runworker.tasks.history()');
+    const run = history.find((r) => r.taskId === 'e2e-task-ticker');
+    assert(run, `history 中没有 e2e-task-ticker 的执行记录（共 ${history.length} 条，来源应是文件顶部预置任务 + 首次 tick）`);
+    assert(
+      run.status === 'success',
+      `run.status=${run.status}${run.error ? `，error=${run.error}` : ''}（期望 success）`,
+    );
+    const task = (await js(win, 'window.runworker.tasks.list()')).find((t) => t.id === 'e2e-task-ticker');
+    assert(task, '任务应在列表中');
+    assert(task.enabled === false, `once 任务执行后 enabled=${task.enabled}（期望 false）`);
+    assert(typeof task.lastRunAt === 'number', 'lastRunAt 未写入');
+    return `status=success，enabled=false，lastRunAt=${new Date(task.lastRunAt).toLocaleTimeString('zh-CN', { hour12: false })}`;
+  });
+
   /* ------------------------------ G. 更新检测 ------------------------------ */
   await step('G1 update.check(true) 返回结构完整的 UpdateInfo（离线也算通过）', 'src/main/platform/updater.ts check / ipc updateCheck', async () => {
     const info = await js(win, 'window.runworker.update.check(true)');
@@ -590,6 +701,11 @@ async function main() {
     }
 
     if (!info.available) {
+      // 合法状态一：更新源可达且无需更新（当前已是最新，或当前版本比远端最新 Release 还新——例如开发版领先于已发布版本）
+      if (!info.error) {
+        return `更新源可达，无可用更新：latest=${info.latestVersion}，current=${info.currentVersion}`;
+      }
+      // 合法状态二：离线/无发布 → 必须给中文 error
       assert(typeof info.error === 'string' && /[\u4e00-\u9fff]/.test(info.error), `离线时的 error 不是中文：${info.error}`);
       return `available=false，error=${info.error.slice(0, 40)}`;
     }

@@ -4,10 +4,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, nativeTheme, shell } from 'electron';
+import { app, BrowserWindow, nativeTheme, safeStorage, shell } from 'electron';
 import { APP_ID, APP_NAME } from '../shared/types';
 import { EVT } from '../shared/ipc';
 import { applyEnvToPath, createAppInfo } from './env';
+import { ENC_PREFIX } from './store';
 import { createContext } from './chat/context';
 import type { MainContext } from './chat/context';
 import { registerIpc } from './ipc';
@@ -78,6 +79,7 @@ async function onReady(): Promise<void> {
   });
 
   installGlobalErrorHandlers(ctx);
+  initSecretsCodec(ctx);
   registerIpc(ctx, { getWindow: () => mainWindow });
   registerThemeEvents(ctx);
 
@@ -191,6 +193,26 @@ async function startPlatform(context: MainContext): Promise<void> {
         })
         .catch((err) => log.warn('[startup] 检查更新失败（忽略）', err));
     }, 8000);
+  }
+}
+
+/**
+ * API Key 加密存储：用系统凭据机制（Windows DPAPI / macOS Keychain / Linux libsecret）。
+ * 可用时把 settings.json 里的明文 Key 迁移为密文；不可用时保持明文并记录日志。
+ */
+function initSecretsCodec(context: MainContext): void {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      context.log.warn('[startup] 系统不支持凭据加密，API Key 仍为明文存储（仅写入本机 settings.json）');
+      return;
+    }
+    context.store.setSecretsCodec({
+      encrypt: (plain) => ENC_PREFIX + safeStorage.encryptString(plain).toString('base64'),
+      decrypt: (stored) => safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64')),
+    });
+    context.log.info('[startup] API Key 已启用系统级加密存储（safeStorage）');
+  } catch (err) {
+    context.log.warn('[startup] 初始化 Key 加密失败，回退明文存储', err);
   }
 }
 

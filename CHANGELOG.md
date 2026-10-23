@@ -19,9 +19,24 @@
 
 - （暂无）
 
-## [0.0.2] - 预计 2026-11-06
+## [0.0.2] - 2026-10-23
 
-> 补丁版本：仅修复问题，不新增功能、不改配置格式。详细清单见 [docs/PATCH-ROADMAP.md](docs/PATCH-ROADMAP.md)。
+> 安全与测试补丁：修复 0.0.1 已知限制中的安全项与测试空白。无破坏性变更，`settings.json` 结构不变（version 仍为 1），老数据升级后自动加密。
+
+### Security
+
+- **API Key 加密存储**：通过 Electron `safeStorage`（Windows DPAPI / macOS Keychain / Linux libsecret）加密后落盘，`settings.json` 中的 Key 为 `enc:v1:` 密文；存量明文在启动时自动迁移，内存态保持明文（LLM 调用方与界面无感知）；系统不支持凭据加密时回退明文并记录日志，损坏密文解密失败回落为空 Key 而非把密文发出去
+- **命令判定补内置变体模式**：`rimraf`、PowerShell 别名 `ri` 递归删除、`find -delete`、`shred`、`wmic ... delete`、.NET `[System.IO.File/Directory]::Delete`、`\\.\PhysicalDrive` 物理设备写入、`git clean -fdx`、`erase /s`、`truncate -s 0` 等绕过写法全部纳入高危/中危拦截（大小写与多空格归一化在 0.0.1 已具备，本版补齐规则覆盖面并加防误伤用例）
+- **更新包完整性**：更新信息透出安装包 SHA-256（GitHub Release 资产 `digest` 字段，兼容自定义源 `sha256` 字段），设置 → 关于 → 检查更新可直接查看，便于下载后人工校验
+
+### Tests
+
+- 平台集成用例 10 → 14：新增命令变体拦截、Key 加密迁移与损坏密文回落、调度器 ticker 补跑（once 到期任务）、资产 digest 透出
+- E2E 断言 22 → 26（`ALL PASS (26/26)`）：B3 Key 落盘密文/内存明文、C6/C7 演示模式 trace 三态（自动路由 / 路由判定 / 手动指定，与真实路径同构）、F4 调度器 ticker 补跑预置到期任务；G1 兼容「更新源可达且已是最新」的合法状态
+
+## [0.0.3] - 预计 2026-11-06
+
+> 稳定性与兼容性补丁（原 0.0.2 稳定性清单并入本版）。详细清单见 [docs/PATCH-ROADMAP.md](docs/PATCH-ROADMAP.md)。
 
 ### Fixed
 
@@ -30,10 +45,8 @@
 - 浅色主题下工具卡片文字对比度不足
 - 网络抖动导致 `run:end` 缺失，界面停留在运行中
 - 跨天日志未切分，单文件持续膨胀
-
-### Security
-
-- 无
+- `0 9 31 * *` 这类表达式在无该日期的月份静默顺延，界面无提示
+- 非标准 OpenAI 兼容服务的 `/v1/models` 结构差异导致渠道测试误报
 
 ## [0.0.1] - 2026-10-23
 
@@ -74,10 +87,11 @@
 - 浅色主题下工具调用卡片对比度偏低（0.0.2 修复）
 - `0 9 31 * *` 这类表达式在无该日期的月份静默顺延到下一个有该日期的月份，界面无提示（0.0.3 补充提示文案）
 - 部分非标准 OpenAI 兼容服务的 `/v1/models` 结构差异会导致渠道测试误报（0.0.3 修复）
-- `denyPatterns` 对大小写与多空格变体的匹配不完整（0.0.4 修复）
+- `denyPatterns` 对大小写与多空格变体的匹配不完整（0.0.2 已修复）
 - Electron 33.4.11 在特定多屏缩放组合下可能出现白屏（0.0.5 修复）
 - 重复安装后 `PATH` 可能出现重复条目（0.0.5 修复）
 
-[Unreleased]: https://github.com/LHRonline/run-worker/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/LHRonline/run-worker/compare/v0.0.2...HEAD
+[0.0.3]: https://github.com/LHRonline/run-worker/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/LHRonline/run-worker/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/LHRonline/run-worker/releases/tag/v0.0.1

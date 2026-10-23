@@ -39,12 +39,13 @@ interface ReleaseItem {
   prerelease?: boolean;
   published_at?: string;
   html_url?: string;
-  assets?: { name?: string; browser_download_url?: string }[];
+  assets?: { name?: string; browser_download_url?: string; digest?: string }[];
   /** 自定义 JSON 源兼容字段 */
   version?: string;
   notes?: string;
   url?: string;
   downloadUrl?: string;
+  sha256?: string;
 }
 
 function getFetch(): FetchLike | null {
@@ -222,6 +223,15 @@ export function createUpdater(deps: PlatformDeps & { appVersion: string; repoUrl
     return item.html_url ?? item.url;
   }
 
+  /** 取安装包资产的 SHA-256（GitHub API digest 字段；没有则回落到自定义源给的散列字段） */
+  function pickSha256(item: ReleaseItem): string | undefined {
+    const assets = item.assets ?? [];
+    const preferred = assets.find((a) => /\.(exe|msi)$/i.test(a.name ?? '')) ?? assets[0];
+    const digest = preferred?.digest ?? item.sha256;
+    if (typeof digest !== 'string' || !digest.trim()) return undefined;
+    return digest.trim().toLowerCase().replace(/^sha256[:=]/, '');
+  }
+
   async function doCheck(): Promise<UpdateInfo> {
     const settings = deps.settings();
     const channel = settings.update?.channel === 'beta' ? 'beta' : 'stable';
@@ -294,6 +304,7 @@ export function createUpdater(deps: PlatformDeps & { appVersion: string; repoUrl
           notes: String(obj.notes ?? obj.body ?? ''),
           publishedAt: obj.published_at,
           downloadUrl: pickDownloadUrl(obj),
+          assetSha256: pickSha256(obj),
           releaseUrl: obj.html_url ?? obj.url,
           checkedAt: now,
         };
@@ -346,6 +357,7 @@ export function createUpdater(deps: PlatformDeps & { appVersion: string; repoUrl
       notes: String(latestRelease.body ?? latestRelease.notes ?? '').slice(0, 8000),
       publishedAt: latestRelease.published_at,
       downloadUrl: pickDownloadUrl(latestRelease),
+      assetSha256: pickSha256(latestRelease),
       releaseUrl: latestRelease.html_url ?? latestRelease.url,
       checkedAt: now,
     };

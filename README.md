@@ -4,7 +4,7 @@
 
 **一个真正能动手的桌面 Agent：多智能体调度 + 直接操作你的电脑 + MCP 连接器 + 本地知识库，并把 token 花在刀刃上。**
 
-![version](https://img.shields.io/badge/version-0.0.1-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4) ![electron](https://img.shields.io/badge/electron-33.4.11-47848f) ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
+![version](https://img.shields.io/badge/version-0.0.2-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4) ![electron](https://img.shields.io/badge/electron-33.4.11-47848f) ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
 ---
 
@@ -13,7 +13,7 @@
 Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一句目标，它自己判断该由哪个子 Agent 接手、该调哪些工具，然后**真的去执行**——写文件、跑命令、出图、生成 3D 资产、剪辑视频、查你的本地资料库。
 它不绑定单一厂商：DeepSeek、OpenRouter 免费模型、Groq、硅基流动、Ollama 本地，任何兼容 OpenAI 协议的接口都能接。默认开启省 token 策略与中文思考流式展示，日常轻量任务可以做到零成本。
 
-> 当前版本 **0.0.1**，MIT 协议开源。后续 0.0.2–0.0.5 为纯补丁版本，只做修复与兼容，不引入破坏性变更（见 [docs/PATCH-ROADMAP.md](docs/PATCH-ROADMAP.md)）。
+> 当前版本 **0.0.2**，MIT 协议开源。后续 0.0.3–0.0.5 为纯补丁版本，只做修复与兼容，不引入破坏性变更（见 [docs/PATCH-ROADMAP.md](docs/PATCH-ROADMAP.md)）。
 
 ---
 
@@ -52,7 +52,7 @@ Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一�
 
 ### 方式一：安装包（推荐）
 
-从 [Releases](https://github.com/LHRonline/run-worker/releases) 下载 `Run-worker-0.0.1-setup.exe`，双击运行。安装器为 **NSIS 非一键式**：
+从 [Releases](https://github.com/LHRonline/run-worker/releases) 下载 `Run-worker-0.0.2-setup.exe`，双击运行。安装器为 **NSIS 非一键式**：
 
 - 可选安装目录（默认在用户目录下，不强制 `Program Files`），创建桌面与开始菜单快捷方式（名称 `Run worker`）
 - 不申请管理员权限（`requestedExecutionLevel: asInvoker`），仅写 `HKCU` 注册表
@@ -71,7 +71,7 @@ npm install
 npm run dev        # 开发模式（Vite + Electron 热更新）
 npm run build      # 编译主进程 + 打包渲染进程
 npm run dist       # 生成 Windows 安装包到 release/
-npm test           # 平台集成用例（node:test，当前 10 项）
+npm test           # 平台集成用例（node:test，当前 14 项）
 ```
 
 ---
@@ -184,10 +184,10 @@ flowchart TD
 | 版本 | 状态 | 主题 |
 | --- | --- | --- |
 | 0.0.1 | ✅ 已发布（2026-10-23） | 首个可用版本：多 Agent + 工具 + MCP + 知识库 + 定时任务 |
-| 0.0.2 | 预计 2 周后 | 稳定性补丁：流式中断、中文路径、主题对比度 |
-| 0.0.3 | 预计 1 个月 | 兼容性补丁：cron 跨月计算、模型渠道异常兜底 |
-| 0.0.4 | 预计 6 周 | 安全与权限补丁：命令判定收紧、审批记忆 |
-| 0.0.5 | 预计 2 个月 | 更新通道补丁：安装器签名校验、差分提示 |
+| 0.0.2 | ✅ 已发布（2026-10-23） | 安全与测试补丁：API Key 加密存储、命令变体拦截、更新包 SHA-256、E2E 26 项 |
+| 0.0.3 | 预计 2 周后 | 稳定性与兼容性补丁：流式中断、中文路径、主题对比度、cron 跨月 |
+| 0.0.4 | 预计 1 个月 | 安全与权限补丁：审批记忆、文件写入边界 |
+| 0.0.5 | 预计 6 周 | 更新通道补丁：安装器签名校验、差分提示 |
 
 补丁版本**不引入新功能、不改配置格式**，只修 Bug、提稳定性、走通更新链路。逐条清单见 [docs/PATCH-ROADMAP.md](docs/PATCH-ROADMAP.md)。
 
@@ -221,8 +221,8 @@ electron-builder.yml                   打包配置
 | `npm run build` | `build:main`（tsc → `dist-electron/`） + `build:renderer`（Vite → `dist/renderer/`） |
 | `npm run pack` | 免安装目录（`--dir`），用于快速验证产物 |
 | `npm run dist` | 生成 NSIS 安装包到 `release/` |
-| `npm test` | 跑 `node --test tests/*.test.mjs`，当前 10 项平台集成用例 |
-| `npm run test:e2e` | 真实 Electron 端到端验证：先 `tsc` + `vite build`，再跑 22 项断言，全绿输出 `ALL PASS (22/22)`，无需任何 API Key；`test:e2e:only` 跳过构建只重跑断言 |
+| `npm test` | 跑 `node --test tests/*.test.mjs`，当前 14 项平台集成用例 |
+| `npm run test:e2e` | 真实 Electron 端到端验证：先 `tsc` + `vite build`，再跑 26 项断言，全绿输出 `ALL PASS (26/26)`，无需任何 API Key；`test:e2e:only` 跳过构建只重跑断言 |
 | `npm run test:packaged` | 打包产物验证：在 `release-<版本>/`、`release/`、`dist/` 中自动选 `app.asar` 最新的一份 win-unpacked（可用 `RUNWORKER_E2E_EXE` 指定），真实启动并做 11 项 CDP 断言，全绿输出 `PACKAGED PASS (11/11)`；需先 `npm run pack` 或 `npm run dist` |
 
 代码规范：TypeScript `strict`，共享类型只写在 `src/shared/`；主进程不直接读写 `window`，渲染进程不直接 `require`；新增 IPC 必须同时改 `src/shared/ipc.ts` 与 `src/preload/index.ts`；文件写入走 `writeJsonAtomic`。

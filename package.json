@@ -1,7 +1,7 @@
 {
   "name": "run-worker",
   "productName": "Run worker",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Run worker — 桌面端全能 Agent，多智能体调度的万能系统助手",
   "main": "dist-electron/main/index.js",
   "author": {

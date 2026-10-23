@@ -449,6 +449,8 @@ export interface UpdateInfo {
   notes: string;
   publishedAt?: string;
   downloadUrl?: string;
+  /** 安装包 SHA-256（GitHub API 资产 digest 字段，格式 sha256:hex；自定义源可给 hex） */
+  assetSha256?: string;
   releaseUrl?: string;
   checkedAt: number;
   error?: string;

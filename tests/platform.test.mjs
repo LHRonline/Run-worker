@@ -68,6 +68,27 @@ test('权限守卫：safe-only 模式下中风险命令需要确认', () => {
   assert.equal(verdict.requiresApproval, true);
 });
 
+test('权限守卫：变体写法（别名 / rimraf / find -delete / WMIC / git clean）不绕过', () => {
+  const { deps } = makeDeps();
+  const guard = createPermissionGuard(deps.settings);
+
+  // 归一化覆盖：大小写 + 多空格
+  assert.equal(guard.inspectCommand('RM  -RF  /tmp/x').risk, 'high', '大小写+多空格不应绕过');
+  // 内置变体模式
+  assert.equal(guard.inspectCommand('rimraf ./build').risk, 'high', 'rimraf 应命中');
+  assert.equal(guard.inspectCommand('find . -name "*.tmp" -delete').risk, 'high', 'find -delete 应命中');
+  assert.equal(guard.inspectCommand('ri -r C:\\logs').risk, 'high', 'PowerShell 别名 ri 递归删除应命中');
+  assert.equal(guard.inspectCommand('wmic process where name="x" delete').risk, 'high', 'WMIC delete 应命中');
+  assert.equal(guard.inspectCommand('git clean -fdx').risk, 'high', 'git clean -fdx 应命中');
+  assert.equal(guard.inspectCommand('shred -u secret.txt').risk, 'high', 'shred 应命中');
+  assert.equal(guard.inspectCommand('rmdir /s /q C:\\x').risk, 'high', 'erase/rmdir 变体应命中');
+
+  // 误伤检查：正常命令不受影响
+  assert.equal(guard.inspectCommand('dir').risk, 'low');
+  assert.equal(guard.inspectCommand('npm run build').risk, 'medium');
+  assert.equal(guard.inspectCommand('npm run install-check').risk, 'medium', '普通含 ri 字样的词不应误判为高危别名');
+});
+
 /* ----------------------------- 长期记忆 ----------------------------- */
 
 test('长期记忆：去重合并、摘要、删除', () => {
@@ -192,6 +213,55 @@ test('定时任务：非法 cron 不应崩溃', () => {
   });
 });
 
+test('定时任务：ticker 补跑已到期任务（once 执行后停用并落历史）', async () => {
+  const { deps, dir } = makeDeps();
+  // 预置一个已到期的 once 任务：nextRunAt 在过去、从未执行过 → 启动校准应保留该时间，ticker 补跑
+  const tasksDir = path.join(dir, 'tasks');
+  mkdirSync(tasksDir, { recursive: true });
+  writeFileSync(
+    path.join(tasksDir, 'tasks.json'),
+    JSON.stringify([
+      {
+        id: 't-ticker',
+        name: '到期任务',
+        prompt: '打个招呼',
+        agentId: 'orchestrator',
+        kind: 'once',
+        runAt: Date.now() - 60_000,
+        enabled: true,
+        createdAt: Date.now() - 120_000,
+        indexResult: false,
+      },
+    ]),
+    'utf8',
+  );
+
+  let called = 0;
+  const scheduler = createScheduler({
+    ...deps,
+    runner: {
+      async run() {
+        called += 1;
+        return { text: 'done', conversationId: 'c1' };
+      },
+    },
+  });
+  scheduler.start();
+  // start() 会在 3 秒后先跑一次 tick（真实 ticker 路径），留足余量
+  await sleep(4600);
+  scheduler.stop();
+
+  assert.equal(called, 1, 'ticker 应恰好补跑一次');
+  const run = scheduler.history()[0];
+  assert.ok(run, '执行历史应有记录');
+  assert.equal(run.taskId, 't-ticker');
+  assert.equal(run.status, 'success');
+  const task = scheduler.list().find((t) => t.id === 't-ticker');
+  assert.ok(task, '任务应在列表中');
+  assert.equal(task.enabled, false, 'once 任务执行后应自动停用');
+  assert.equal(task.lastRunAt === undefined, false, 'lastRunAt 应被写入');
+});
+
 /* ------------------------------ 更新检测 ----------------------------- */
 
 test('更新检测：语义化版本比较与可用性判断', async () => {
@@ -220,6 +290,39 @@ test('更新检测：网络失败返回中文错误而不是抛异常', async ()
   const info = await updater.check(true);
   assert.equal(info.available, false);
   assert.ok(typeof info.error === 'string' && info.error.length > 0);
+});
+
+test('更新检测：GitHub 资产 digest 透出为小写 assetSha256', async () => {
+  const { deps } = makeDeps();
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify([
+        {
+          tag_name: 'v0.0.2',
+          prerelease: false,
+          draft: false,
+          assets: [
+            {
+              name: 'App-0.0.2-setup.exe',
+              browser_download_url: 'https://example.com/App-0.0.2-setup.exe',
+              digest: 'sha256:ABCDEF1234567890',
+            },
+          ],
+        },
+      ]),
+    );
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+
+  const updater = createUpdater({ ...deps, appVersion: '0.0.1', repoUrl: 'LHRonline/run-worker' });
+  deps.saveSettings({ update: { ...deps.settings().update, feed: `http://127.0.0.1:${port}/releases` } });
+  const info = await updater.check(true);
+  server.close();
+
+  assert.equal(info.available, true);
+  assert.equal(info.assetSha256, 'abcdef1234567890', 'digest 应去掉 sha256: 前缀并转小写');
 });
 
 /* -------------------------------- MCP -------------------------------- */
@@ -304,6 +407,52 @@ test('设置存储：深合并、对话增删改查与导出', () => {
 
   store.deleteConversation(conv.id);
   assert.equal(store.listConversations().length, 0);
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('设置存储：API Key 经 codec 加密落盘、内存态保持明文', () => {
+  const { Store } = require(path.join(DIST, 'main/store.js'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'rw-store-enc-'));
+  const settingsFile = path.join(dir, 'settings.json');
+  const readRaw = () => JSON.parse(require('node:fs').readFileSync(settingsFile, 'utf8'));
+
+  // 1) 未注入 codec（等同旧版本）：明文落盘
+  const store = new Store(dir);
+  const providers = store.getSettings().providers.map((p, i) => (i === 0 ? { ...p, apiKey: 'sk-test-plain-123456' } : p));
+  store.updateSettings({ providers });
+  assert.equal(readRaw().providers[0].apiKey, 'sk-test-plain-123456', '无 codec 时应与旧行为一致（明文）');
+
+  // 2) 注入 codec：内存解密 + 存量明文迁移为密文
+  store.setSecretsCodec({
+    encrypt: (plain) => 'enc:v1:' + Buffer.from(plain, 'utf8').toString('base64'),
+    decrypt: (stored) => Buffer.from(stored.slice('enc:v1:'.length), 'base64').toString('utf8'),
+  });
+  assert.equal(store.getSettings().providers[0].apiKey, 'sk-test-plain-123456', '内存态必须保持明文（LLM 调用方无感知）');
+  const onDisk = readRaw().providers[0].apiKey;
+  assert.match(onDisk, /^enc:v1:/, '落盘应为密文');
+  assert.ok(!onDisk.includes('sk-test-plain'), '明文 Key 不得出现在 settings.json');
+
+  // 3) 重启（新 Store 实例）：注入 codec 后应解密回明文
+  const store2 = new Store(dir);
+  store2.setSecretsCodec({
+    encrypt: (plain) => 'enc:v1:' + Buffer.from(plain, 'utf8').toString('base64'),
+    decrypt: (stored) => Buffer.from(stored.slice('enc:v1:'.length), 'base64').toString('utf8'),
+  });
+  assert.equal(store2.getSettings().providers[0].apiKey, 'sk-test-plain-123456', '重启后应解密还原');
+
+  // 4) 解密失败的密文置空，不把密文当 Key 发出去
+  const broken = readRaw();
+  broken.providers[0].apiKey = 'enc:v1:!!!not-base64!!!';
+  require('node:fs').writeFileSync(settingsFile, JSON.stringify(broken), 'utf8');
+  const store3 = new Store(dir);
+  store3.setSecretsCodec({
+    encrypt: (plain) => 'enc:v1:' + Buffer.from(plain, 'utf8').toString('base64'),
+    decrypt: () => {
+      throw new Error('bad ciphertext');
+    },
+  });
+  assert.equal(store3.getSettings().providers[0].apiKey, '', '解密失败应回落为空 Key');
 
   rmSync(dir, { recursive: true, force: true });
 });

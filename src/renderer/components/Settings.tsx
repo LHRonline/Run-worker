@@ -969,6 +969,11 @@ export function Settings() {
                           ? updateInfo.notes
                           : `已是最新版本 v${updateInfo.currentVersion}，发布时间 ${updateInfo.publishedAt ? formatDateTime(new Date(updateInfo.publishedAt).getTime()) : '—'}。`}
                       </div>
+                      {updateInfo.available && updateInfo.assetSha256 ? (
+                        <div className="field-hint mono-text" style={{ wordBreak: 'break-all' }}>
+                          安装包 SHA-256：{updateInfo.assetSha256}
+                        </div>
+                      ) : null}
                       <div className="ua">
                         {updateInfo.available ? (
                           <>

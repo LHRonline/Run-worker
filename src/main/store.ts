@@ -240,6 +240,20 @@ function toMeta(conv: Conversation): ConversationMeta {
 }
 
 /* ------------------------------------------------------------------ */
+/* API Key 加密存储（safeStorage 编解码）                                */
+/* ------------------------------------------------------------------ */
+
+/** settings.json 中加密 Key 的前缀（v1 = safeStorage 原始密文 + base64） */
+export const ENC_PREFIX = 'enc:v1:';
+
+export interface SecretsCodec {
+  /** 明文 → 带 ENC_PREFIX 的密文（仅用于写盘） */
+  encrypt(plain: string): string;
+  /** ENC_PREFIX 密文 → 明文（仅用于读盘/内存态） */
+  decrypt(stored: string): string;
+}
+
+/* ------------------------------------------------------------------ */
 /* Store                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -249,6 +263,8 @@ export class Store {
   private index: ConversationMeta[] = [];
   /** 会话正文缓存，避免频繁磁盘读 */
   private cache = new Map<string, Conversation>();
+  /** API Key 编解码器（app ready 后注入 safeStorage 实现；单测/无加密环境为 null） */
+  private codec: SecretsCodec | null = null;
 
   constructor(userDataDir: string) {
     this.paths = resolvePaths(userDataDir);
@@ -261,9 +277,34 @@ export class Store {
 
   /* -------------------------- 设置 -------------------------- */
 
+  /**
+   * 注入 API Key 编解码器（app ready 后调用一次）。
+   * 会把内存中已解密的 Key 重新持久化，完成「明文存量 → 密文」迁移。
+   */
+  setSecretsCodec(codec: SecretsCodec): void {
+    this.codec = codec;
+    this.decryptApiKeysInPlace(this.settings);
+    this.persistSettings(this.settings);
+  }
+
+  /** 密文 Key 解回明文（仅内存态；解密失败的 Key 置空，避免把密文当 Key 发出去） */
+  private decryptApiKeysInPlace(settings: Settings): void {
+    if (!this.codec) return;
+    for (const p of settings.providers) {
+      if (typeof p.apiKey === 'string' && p.apiKey.startsWith(ENC_PREFIX)) {
+        try {
+          p.apiKey = this.codec.decrypt(p.apiKey);
+        } catch {
+          p.apiKey = '';
+        }
+      }
+    }
+  }
+
   private loadSettings(): Settings {
     const raw = readJsonRaw(this.paths.settingsFile);
     const settings = migrateSettings(raw);
+    this.decryptApiKeysInPlace(settings);
     if (raw === null) {
       this.persistSettings(settings);
     } else if (JSON.stringify(raw) !== JSON.stringify(settings)) {
@@ -275,7 +316,16 @@ export class Store {
 
   private persistSettings(settings: Settings): void {
     try {
-      writeJsonAtomic(this.paths.settingsFile, settings);
+      // 写盘前把明文 Key 加密；内存态保持明文，IPC / LLM 调用方无感知
+      let payload: unknown = settings;
+      if (this.codec) {
+        const clone = JSON.parse(JSON.stringify(settings)) as Settings;
+        for (const p of clone.providers) {
+          if (p.apiKey && !p.apiKey.startsWith(ENC_PREFIX)) p.apiKey = this.codec.encrypt(p.apiKey);
+        }
+        payload = clone;
+      }
+      writeJsonAtomic(this.paths.settingsFile, payload);
     } catch {
       /* 设置写失败不应阻塞运行 */
     }

@@ -346,8 +346,16 @@ export class ChatService {
 
     /* ---------------------------- 演示模式 ---------------------------- */
     if (!resolved.target) {
-      // 演示模式也展示一次路由：总调度接单时按关键词挑子 Agent，UI 上能看到多 Agent 调度
-      if (!manual && agent === 'orchestrator' && settings.agent.autoDelegate) {
+      // 演示模式与真实路径同构：手动指定 / 自动路由 / 路由判定三态都写入 trace
+      if (manual) {
+        trace.push({
+          id: `tr_${Date.now().toString(36)}`,
+          agentId: agent,
+          action: '手动指定',
+          detail: '用户已指定 Agent，跳过自动路由',
+          at: Date.now(),
+        });
+      } else if (agent === 'orchestrator' && settings.agent.autoDelegate) {
         const decision = ruleRoutePublic(req.text, agent, true);
         if (decision.agentId !== agent) {
           emitRun({
@@ -357,7 +365,22 @@ export class ChatService {
             to: decision.agentId,
             reason: '按任务关键词匹配',
           });
+          trace.push({
+            id: `tr_${Date.now().toString(36)}`,
+            agentId: decision.agentId,
+            action: '自动路由',
+            detail: `${agent} → ${decision.agentId}：按任务关键词匹配`,
+            at: Date.now(),
+          });
           agent = decision.agentId;
+        } else {
+          trace.push({
+            id: `tr_${Date.now().toString(36)}`,
+            agentId: agent,
+            action: '路由判定',
+            detail: `保持 ${agent}：未命中任何子 Agent 关键词`,
+            at: Date.now(),
+          });
         }
       }
       notify('info', '未配置可用的模型 API Key，已进入演示模式。');
@@ -391,6 +414,7 @@ export class ChatService {
         status: signal.aborted ? 'aborted' : 'done',
       };
       conv.messages.push(demoMsg);
+      conv.trace = [...(conv.trace ?? []), ...trace].slice(-200);
       const convUsage = this.ctx.store.saveConversation(conv).usage ?? { ...DEFAULT_USAGE };
       emitRun({ type: 'run:usage', runId, usage: { ...DEFAULT_USAGE }, conversationUsage: convUsage });
       emitRun({ type: 'run:end', runId, status: signal.aborted ? 'aborted' : 'done', messageId: demoMsg.id });
