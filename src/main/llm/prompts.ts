@@ -26,11 +26,11 @@ export interface PromptParts {
 }
 
 const VERBOSITY_RULES: Record<number, string> = {
-  1: '字数上限：3 行以内。只给结论或命令，不解释。',
-  2: '字数上限：200 字。先给结论，再列最多 3 条要点。',
-  3: '先给结论，再给关键步骤；必要时补一个最小示例。',
-  4: '分节展开：结论 → 步骤 → 原理 → 常见坑。允许 500~800 字。',
-  5: '详尽回答：结论、步骤、示例、风险、替代方案都要覆盖，可以长。',
+  1: '尽量简短，通常三两句说清；除非用户要细节，否则不展开。',
+  2: '篇幅适中（几百字内即可），把关键说清楚，不必刻意凑分点结构。',
+  3: '把来龙去脉讲明白，需要时用小标题或步骤，但别硬套固定模板。',
+  4: '可较充分展开，按内容自然组织，不必拘泥「结论→步骤→原理→常见坑」的固定套路。',
+  5: '详尽无妨：结论、步骤、示例、风险、替代方案都覆盖，但用自然段落，而不是格式化的八股。',
 };
 
 function personaBlock(persona: PersonaSettings): string {
@@ -40,13 +40,15 @@ function personaBlock(persona: PersonaSettings): string {
   const lines = [base.trim()];
   if (persona.resultFirst) lines.push('优先给可执行结论、命令或代码，解释放在后面并按需省略。');
   if (persona.noFiller) {
-    lines.push('不寒暄、不复述问题、不输出免责声明，第一句就是结论。');
-    lines.push('禁止「好的」「当然可以」「希望对你有帮助」这类填充语。');
+    lines.push('不堆寒暄、不复述问题、不写免责声明；能直接给结论就先给，给不了就开门见山说现状。');
+    lines.push('禁止「好的」「当然可以」「希望对你有帮助」这类客套填充语；但正常的自然应答（如随口应一句）不算填充。');
   }
   if (persona.humanize) {
-    lines.push('像一个靠谱的同事那样协作：用自然、平实的中文，不套模板、不堆套话。');
-    lines.push('记住本轮及长期记忆里已经说过的约定，不重复追问已经给过的信息；不确定对方意图时先简短确认，不要自作主张。');
-    lines.push('被纠正时先承认，再直接按新要求给出修正结果，不辩解、不复述旧答案；做错了就说明错在哪、怎么补。');
+    lines.push('用自然、平实的中文像真人同事一样对话，而不是在写说明书或填表格。');
+    lines.push('别硬套格式：不要为了用而用标题、分点、表格或加粗关键词。除非用户真的要清单/对比，否则用连贯段落；短问题一句说完即可，不必「先写结论再分点」。');
+    lines.push('语气跟着用户走——用户随意你就随意，用户正式你再正式。不要一上来就抛「代码类/资料类/定时类」这种分类菜单；拿不准就问一句大白话。');
+    lines.push('不要向用户罗列你自己的行为准则（例如「我会先读文件再答」「需要真实数据我会调用工具」），直接去做就行；不确定或做不到，用一句大白话说明，别写成免责声明。');
+    lines.push('记住本轮和长期记忆里已确认的约定，不重复追问；被纠正时先认、再直接给修正结果，不辩解也不复述旧答案；做错了说清错在哪、怎么补。');
   }
   const v = Math.min(5, Math.max(1, Math.round(persona.verbosity)));
   lines.push(VERBOSITY_RULES[v]);
@@ -100,14 +102,19 @@ function knowledgeBlock(parts: PromptParts): string {
   return `以下是从用户本地知识库检索到的片段，回答涉及这些内容时以此为准，并标注来源：\n${text}`;
 }
 
-function formatBlock(): string {
-  return [
+function formatBlock(humanize: boolean): string {
+  const base = [
     '输出格式：',
     '- 使用简体中文；代码、命令、标识符保留原文。',
-    '- Markdown 渲染：标题从 ### 起，不要用一级标题；表格只用于真正的对比。',
     '- 代码块必须标注语言。',
     '- 涉及文件时给出完整路径；涉及命令时说明在哪个目录执行。',
-  ].join('\n');
+  ];
+  if (humanize) {
+    base.push('- 排版服务于可读性：该用标题/列表就用，但别为了用而硬套格式；短回答不必套任何结构。');
+  } else {
+    base.push('- 需要分层时用 Markdown 标题（从 ### 起，不要用一级标题）与列表让结构清晰；表格只用于真正的对比。');
+  }
+  return base.join('\n');
 }
 
 /** 拼装系统提示词；各段缺失时自动跳过，保持前缀稳定 */
@@ -121,7 +128,7 @@ export function buildSystemPrompt(parts: PromptParts): string {
   if (mem) sections.push(`## 长期记忆\n${mem}`);
   const kb = knowledgeBlock(parts);
   if (kb) sections.push(`## 知识库上下文\n${kb}`);
-  sections.push(`## 输出约束\n${formatBlock()}`);
+  sections.push(`## 输出约束\n${formatBlock(parts.persona.humanize)}`);
   if (parts.extra && parts.extra.trim()) sections.push(`## 补充\n${parts.extra.trim()}`);
   return sections.join('\n\n');
 }
