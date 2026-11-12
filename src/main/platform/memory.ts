@@ -23,6 +23,14 @@ const KIND_LABEL: Record<MemoryKind, string> = {
   instruction: '要求',
 };
 
+/** 合并相似记忆时保留更高优先级的类型：用户主动纠正的「要求」不能被自动抽取的偏好/事实降级 */
+const KIND_PRIORITY: Record<MemoryKind, number> = {
+  fact: 0,
+  project: 1,
+  preference: 2,
+  instruction: 3,
+};
+
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'to', 'of', 'and', 'or', 'in', 'on', 'for',
   'with', 'that', 'this', 'it', 'as', 'at', 'by', 'from', 'my', 'me', 'i', 'you', 'your', 'we',
@@ -219,7 +227,8 @@ export function createMemoryStore(deps: PlatformDeps): MemoryStore {
         best.weight = clampWeight(Math.max(best.weight, weight) + 0.08);
         best.updatedAt = now;
         best.hits += 1;
-        if (input.kind) best.kind = input.kind;
+        // 只升不降：自动抽取的「偏好/事实」不能把用户纠正写的「要求」覆盖掉
+        if (input.kind && KIND_PRIORITY[input.kind] > KIND_PRIORITY[best.kind]) best.kind = input.kind;
         // 合并来源：多来源以逗号分隔追加到 source 字符串（不新增字段、不改持久化形状），
         // 保证 forgetBySource 删除任一派生会话时都能命中这条合并记忆
         const incoming = String(input.source ?? '').trim();
@@ -320,12 +329,20 @@ export function createMemoryStore(deps: PlatformDeps): MemoryStore {
     digest(maxChars = 800): string {
       if (facts.length === 0) return '';
       const budget = Math.max(10, maxChars);
+      // 用户主动纠正写成的「要求」必须每轮都在：置顶且优先占预算。
+      // 否则旧记忆一多就被截断/淹没，表现为「纠正过一次，过几轮又犯老毛病」。
+      const ordered = [
+        ...sortFacts(facts.filter((f) => f.kind === 'instruction')),
+        ...sortFacts(facts.filter((f) => f.kind !== 'instruction')),
+      ];
       const lines: string[] = [];
       let used = 0;
-      for (const f of sortFacts(facts)) {
+      for (const f of ordered) {
         const label = KIND_LABEL[f.kind] ?? '事实';
         const oneLine = f.text.replace(/\s+/g, ' ').trim();
-        let line = `- [${label}] ${oneLine}`;
+        let line = f.kind === 'instruction'
+          ? `- 【要求】${oneLine}`
+          : `- [${label}] ${oneLine}`;
         const room = budget - used - 1;
         if (room <= 12) break;
         if (line.length > room) line = line.slice(0, Math.max(0, room - 1)) + '…';

@@ -50,13 +50,11 @@ function buildBody(text: string, settings: Settings, agentId: AgentId): string {
   const agent = agentDescriptor(agentId);
   if (GREETING.test(text.trim())) {
     return [
-      '在。不过现在是**演示模式**——还没有可用的模型 API Key，所以我只能用本地规则回答，无法真正理解复杂任务。',
+      '在。现在还是演示模式，没配模型 Key，复杂活儿我暂时接不了。',
       '',
-      abilityText(),
+      '配个免费 Key 就能正常用了，一分钟的事：',
       '',
-      '配置一个免费 Key 后（一分钟就能搞定），这些能力全部可真实执行。',
-      '',
-      PATHS_BRIEF,
+      demoSetupGuide(settings),
     ].join('\n');
   }
 
@@ -69,13 +67,11 @@ function buildBody(text: string, settings: Settings, agentId: AgentId): string {
   }
 
   return [
-    `收到：「${text.trim().slice(0, 80)}」。`,
-    '',
-    `这类任务按分工应该交给 **${agent.name}**（${agent.tagline}）。但当前处于**演示模式**：没有可用的模型 API Key，我无法真正规划步骤、调用工具或生成内容，也不会假装已经做完。`,
+    `「${text.trim().slice(0, 80)}」这句我看到了。不过现在还没配好模型 Key，处在演示模式，没法真去规划步骤、调工具或者生成内容，也不想装作已经做完。`,
     '',
     demoSetupGuide(settings),
     '',
-    '配好 Key 后把这句需求再发一次，我会直接开工。',
+    '配好 Key 把这句再发一遍，我就直接开工。',
   ].join('\n');
 }
 
@@ -83,13 +79,13 @@ function buildBody(text: string, settings: Settings, agentId: AgentId): string {
 function buildThinking(text: string, agentId: AgentId): string {
   const agent = agentDescriptor(agentId);
   const raw = text.replace(/\s+/g, ' ').trim();
-  let intent: string;
-  if (GREETING.test(raw)) intent = '打招呼';
-  else if (ASK_CONFIG.test(raw)) intent = '询问怎么配置模型';
-  else if (ASK_ABILITY.test(raw)) intent = '了解我的能力边界';
-  else intent = `「${raw.slice(0, 18)}」`;
+  let topic: string;
+  if (GREETING.test(raw)) topic = '打了个招呼';
+  else if (ASK_CONFIG.test(raw)) topic = '问怎么配模型';
+  else if (ASK_ABILITY.test(raw)) topic = '想了解我能做什么';
+  else topic = `问的是「${raw.slice(0, 18)}」`;
 
-  return `用户这句话的意图是${intent}，按分工应交给${agent.name}。当前没有可用 API Key，不能假装已执行，先说明演示模式并给出免费配置路径。`;
+  return `${topic}。现在还没配好 Key，只能走演示模式，先把情况说清楚，再给几条免费配置的路径。`;
 }
 
 /** 按小块推送，保持与真实流式一致的体验 */

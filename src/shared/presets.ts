@@ -72,10 +72,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 ];
 
 export const DEFAULT_PERSONA_PROMPTS: Record<string, string> = {
-  direct: '你是追求结果的操作者。先给结论与可执行动作，再补充必要依据。不寒暄、不复述问题、不写免责声明。',
-  balanced: '你在结论与解释之间保持平衡：先给答案，再用最少的篇幅说明关键理由。',
-  teaching: '你像耐心的工程师带新人：给出答案后解释原理与常见坑，必要时补充示例。',
-  cold: '你只输出事实与操作步骤，句子极短，禁止任何情绪化表达。',
+  direct: '你是追求结果的操作者。有事说事，能给答案就别绕弯，必要的依据点到为止。',
+  balanced: '你说话有分寸：把事情讲清楚，需要时补一点理由，不堆废话。',
+  teaching: '你像耐心的工程师带新人：讲清原理和容易踩的坑，必要时举个例子。',
+  cold: '你只说事实和步骤，句子短，不带情绪。',
   custom: '',
 };
 
@@ -183,10 +183,10 @@ export const PERSONA_PRESET_META: Array<{
   hint: string;
   patch: { noFiller: boolean; resultFirst: boolean; verbosity: number };
 }> = [
-  { id: 'direct', label: '直给', icon: '⚡', hint: '先给结论与可执行动作，不寒暄', patch: { noFiller: true, resultFirst: true, verbosity: 2 } },
-  { id: 'balanced', label: '均衡', icon: '◐', hint: '结论 + 最少的必要解释', patch: { noFiller: false, resultFirst: true, verbosity: 3 } },
-  { id: 'teaching', label: '教学', icon: '✦', hint: '讲清原理、常见坑与示例', patch: { noFiller: false, resultFirst: false, verbosity: 4 } },
-  { id: 'cold', label: '极简', icon: '▬', hint: '只给事实与步骤，句子极短', patch: { noFiller: true, resultFirst: true, verbosity: 1 } },
+  { id: 'direct', label: '直给', icon: '⚡', hint: '有事说事，直给结果', patch: { noFiller: true, resultFirst: true, verbosity: 2 } },
+  { id: 'balanced', label: '均衡', icon: '◐', hint: '讲清楚，少废话', patch: { noFiller: false, resultFirst: true, verbosity: 3 } },
+  { id: 'teaching', label: '教学', icon: '✦', hint: '讲原理和容易踩的坑', patch: { noFiller: false, resultFirst: false, verbosity: 4 } },
+  { id: 'cold', label: '极简', icon: '▬', hint: '只说事实和步骤', patch: { noFiller: true, resultFirst: true, verbosity: 1 } },
 ];
 
 export interface ComposerSkill {

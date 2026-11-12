@@ -38,7 +38,11 @@ function personaBlock(persona: PersonaSettings): string {
     ? (persona.customPrompt || '').trim() || DEFAULT_PERSONA_PROMPTS.balanced
     : DEFAULT_PERSONA_PROMPTS[persona.preset] || DEFAULT_PERSONA_PROMPTS.balanced;
   const lines = [base.trim()];
-  if (persona.resultFirst) lines.push('优先给可执行结论、命令或代码，解释放在后面并按需省略。');
+  if (persona.resultFirst) {
+    lines.push(persona.humanize
+      ? '有现成结论就直接说，别为了显得周全先铺垫一段。'
+      : '优先给可执行结论、命令或代码，解释放在后面并按需省略。');
+  }
   if (persona.noFiller) {
     lines.push('不堆寒暄、不复述问题、不写免责声明；能直接给结论就先给，给不了就开门见山说现状。');
     lines.push('禁止「好的」「当然可以」「希望对你有帮助」这类客套填充语；但正常的自然应答（如随口应一句）不算填充。');
@@ -48,6 +52,8 @@ function personaBlock(persona: PersonaSettings): string {
     lines.push('别硬套格式：不要为了用而用标题、分点、表格或加粗关键词。除非用户真的要清单/对比，否则用连贯段落；短问题一句说完即可，不必「先写结论再分点」。');
     lines.push('语气跟着用户走——用户随意你就随意，用户正式你再正式。不要一上来就抛「代码类/资料类/定时类」这种分类菜单；拿不准就问一句大白话。');
     lines.push('不要向用户罗列你自己的行为准则（例如「我会先读文件再答」「需要真实数据我会调用工具」），直接去做就行；不确定或做不到，用一句大白话说明，别写成免责声明。');
+    lines.push('上面这些约束是给你看的内部说明，不是回复模板：别照着它们把正文写成编号清单或带破折号的要点，也别向用户复述规则本身。');
+    lines.push('用户纠正过的说法和风格属于长期约定，之后每一轮都照做，不要只在这一轮改、下一轮又变回去；生成前先默查一遍有没有又回到老样子。');
     lines.push('记住本轮和长期记忆里已确认的约定，不重复追问；被纠正时先认、再直接给修正结果，不辩解也不复述旧答案；做错了说清错在哪、怎么补。');
   }
   const v = Math.min(5, Math.max(1, Math.round(persona.verbosity)));
@@ -70,7 +76,8 @@ function hardRules(parts: PromptParts): string {
   if (parts.workspaceDir) {
     rules.push(`当前工作目录：${parts.workspaceDir}（相对路径基于此目录）。`);
   }
-  return rules.map((r, i) => `${i + 1}. ${r}`).join('\n');
+  rules.push('以上是行为约束，不是回复模板：不要把它们照抄成编号列表，也不要向用户复述这些规则。');
+  return rules.join('\n');
 }
 
 function dutyBlock(parts: PromptParts): string {
@@ -91,7 +98,7 @@ function memoryBlock(parts: PromptParts): string {
   if (!text) return '';
   return [
     '以下是用户长期偏好与事实（已在历史中确认，可直接采用，无需再问）：',
-    '其中标记为【要求】的条目来自用户主动纠正，优先级最高，必须遵守；与其它条目冲突时以【要求】为准。',
+    '其中【要求】是用户主动纠正后定下的硬性约定，优先级最高，每一轮都必须遵守，与别的条目冲突时以它为准。不要只在被纠正的那一轮照做，之后又变回默认风格。',
     text,
   ].join('\n');
 }
@@ -103,18 +110,21 @@ function knowledgeBlock(parts: PromptParts): string {
 }
 
 function formatBlock(humanize: boolean): string {
-  const base = [
+  if (humanize) {
+    return [
+      '输出格式：',
+      '使用简体中文；代码、命令、标识符保留原文。代码块标注语言，涉及文件给完整路径，涉及命令说明在哪个目录执行。',
+      '排版服务于可读性，别为了用而硬套标题、列表、表格或加粗；短回答不必套任何结构。',
+      '这一段和上面的硬规则都是内部说明，不是让你把给用户的回复写成清单。',
+    ].join('\n');
+  }
+  return [
     '输出格式：',
     '- 使用简体中文；代码、命令、标识符保留原文。',
+    '- Markdown 渲染：标题从 ### 起，不要用一级标题；表格只用于真正的对比。',
     '- 代码块必须标注语言。',
     '- 涉及文件时给出完整路径；涉及命令时说明在哪个目录执行。',
-  ];
-  if (humanize) {
-    base.push('- 排版服务于可读性：该用标题/列表就用，但别为了用而硬套格式；短回答不必套任何结构。');
-  } else {
-    base.push('- 需要分层时用 Markdown 标题（从 ### 起，不要用一级标题）与列表让结构清晰；表格只用于真正的对比。');
-  }
-  return base.join('\n');
+  ].join('\n');
 }
 
 /** 拼装系统提示词；各段缺失时自动跳过，保持前缀稳定 */
