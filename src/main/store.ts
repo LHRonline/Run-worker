@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createDefaultSettings } from '../shared/presets';
 import { DEFAULT_USAGE } from '../shared/types';
-import type { AgentId, ChatMessage, Conversation, ConversationMeta, Settings } from '../shared/types';
+import type { AgentId, ChatMessage, Conversation, ConversationFileRef, ConversationMeta, Settings } from '../shared/types';
 import type { DeepPartial } from '../shared/ipc';
 import type { Logger } from '../shared/platform';
 
@@ -172,8 +172,11 @@ export function migrateSettings(raw: unknown): Settings {
 /* 会话工具函数                                                        */
 /* ------------------------------------------------------------------ */
 
-function sumUsage(list: ChatMessage[]) {
+/** 汇总会话 token；同时标注「精确 / 估算」，避免把估算值当成 API 精确值展示 */
+export function sumUsage(list: ChatMessage[]) {
   const total = { ...DEFAULT_USAGE };
+  let exact = 0;
+  let estimated = 0;
   for (const m of list) {
     if (!m.usage) continue;
     total.promptTokens += m.usage.promptTokens || 0;
@@ -182,7 +185,20 @@ function sumUsage(list: ChatMessage[]) {
     total.cachedTokens += m.usage.cachedTokens || 0;
     total.totalTokens += m.usage.totalTokens || 0;
     total.costCny += m.usage.costCny || 0;
+    const reqs = m.usage.totalRequests ?? 1;
+    total.totalRequests = (total.totalRequests ?? 0) + reqs;
+    if (m.usage.tokenSource === 'estimated') {
+      estimated += reqs;
+    } else if (m.usage.tokenSource === 'mixed') {
+      const e = m.usage.exactRequests ?? 0;
+      exact += e;
+      estimated += Math.max(0, reqs - e);
+    } else {
+      exact += reqs;
+    }
   }
+  total.exactRequests = exact;
+  total.tokenSource = estimated === 0 ? 'api' : exact === 0 ? 'estimated' : 'mixed';
   return total;
 }
 
@@ -207,6 +223,17 @@ function previewOf(list: ChatMessage[]): string {
 
 function newId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 供「引用对话文件」展示图标/类型，不读取文件内容 */
+function mimeOfExt(file: string): string {
+  const map: Record<string, string> = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp',
+    '.pdf': 'application/pdf', '.md': 'text/markdown', '.txt': 'text/plain',
+    '.json': 'application/json', '.csv': 'text/csv',
+  };
+  return map[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
 }
 
 export function createEmptyConversation(title?: string, agentId: AgentId = 'orchestrator'): Conversation {
@@ -462,28 +489,207 @@ export class Store {
     this.saveConversation(conv);
   }
 
-  deleteConversation(id: string): void {
-    this.cache.delete(id);
-    this.index = this.index.filter((m) => m.id !== id);
-    this.persistIndex();
+  /* ----------------------- 彻底删除 / 产物清理 ----------------------- */
+
+  /** 删除单个路径；不存在视为成功。返回是否真的清干净了 */
+  private removePath(full: string): boolean {
     try {
-      fs.rmSync(this.convFile(id), { force: true });
+      fs.rmSync(full, { force: true, recursive: true });
+      return !fs.existsSync(full);
     } catch {
-      /* 忽略 */
+      return false;
     }
   }
 
-  clearConversations(): void {
+  /** 递归统计目录内文件数（用于给出真实的「已擦除 N 个文件」） */
+  private countFiles(dir: string): number {
+    let n = 0;
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) n += this.countFiles(full);
+        else n += 1;
+      }
+    } catch {
+      /* 目录不可读 */
+    }
+    return n;
+  }
+
+  private artifactsRoot(workspaceDir: string): string {
+    return path.join(workspaceDir, '.runworker-artifacts');
+  }
+
+  /**
+   * 彻底删除一个会话：先删文件，成功后再改索引。
+   * 删除失败的路径会如实返回，界面提示用户关闭占用程序后重试，避免「显示已删除、其实还在」。
+   */
+  deleteConversation(id: string): { files: number; failed: string[] } {
+    const failed: string[] = [];
+    let files = 0;
+    this.cache.delete(id);
+
+    // 主文件 + 同名前缀的辅助文件（<id>.json、<id>.trace.json、<id>.lock …）
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(this.paths.convDir);
+    } catch {
+      entries = [];
+    }
+    for (const f of entries) {
+      if (f !== `${id}.json` && !f.startsWith(`${id}.`)) continue;
+      const full = path.join(this.paths.convDir, f);
+      if (!fs.existsSync(full)) continue;
+      if (this.removePath(full)) files += 1;
+      else failed.push(full);
+    }
+
+    // 主文件仍在（被占用）时保留索引条目，否则会产生永远找不回的孤儿文件
+    const mainGone = !fs.existsSync(this.convFile(id));
+    if (mainGone) {
+      this.index = this.index.filter((m) => m.id !== id);
+      this.persistIndex();
+    }
+    return { files, failed };
+  }
+
+  /**
+   * 清理某个会话产生的产物。除 <root>/<id>/ 外，还兼容 0.0.3a 及更早版本
+   * 直接散落在 <root>/ 下、以会话 id 命名的文件。
+   */
+  purgeConversationArtifacts(id: string, workspaceDir: string): { files: number; failed: string[] } {
+    const root = this.artifactsRoot(workspaceDir);
+    const failed: string[] = [];
+    const targets: string[] = [];
+    const dir = path.join(root, id);
+    if (fs.existsSync(dir)) targets.push(dir);
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory() || !entry.name.startsWith(id)) continue;
+        const full = path.join(root, entry.name);
+        if (!targets.includes(full)) targets.push(full);
+      }
+    } catch {
+      /* 产物根目录不存在 */
+    }
+
+    let files = 0;
+    for (const target of targets) {
+      const before = fs.statSync(target, { throwIfNoEntry: false })?.isDirectory() ? this.countFiles(target) : 1;
+      const leftAfter = () => {
+        try {
+          return fs.statSync(target, { throwIfNoEntry: false })?.isDirectory() ? this.countFiles(target) : (fs.existsSync(target) ? 1 : 0);
+        } catch {
+          return 0;
+        }
+      };
+      let ok = this.removePath(target);
+      let left = leftAfter();
+      if (!ok && left === 0) ok = true;
+      files += Math.max(0, before - left);
+      if (!ok || left > 0) failed.push(target);
+    }
+    return { files, failed };
+  }
+
+  /** 清空全部会话：会话文件 + 索引 + 整个产物根目录（含旧版散落文件与 _shared） */
+  clearConversations(workspaceDir?: string): { files: number; artifacts: number; failed: string[] } {
+    const failed: string[] = [];
+    let files = 0;
+    let artifacts = 0;
+
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(this.paths.convDir);
+    } catch {
+      entries = [];
+    }
+    for (const f of entries) {
+      if (f === 'index.json') continue;
+      const full = path.join(this.paths.convDir, f);
+      if (this.removePath(full)) files += 1;
+      else failed.push(full);
+    }
+
+    if (workspaceDir) {
+      const root = this.artifactsRoot(workspaceDir);
+      const before = this.countFiles(root);
+      const ok = this.removePath(root);
+      const left = this.countFiles(root);
+      artifacts = Math.max(0, before - left);
+      if (!ok && left > 0) failed.push(root);
+    }
+
+    // 文件清完再落盘索引，避免出现「索引为空但文件还在」的永久孤儿
     this.cache.clear();
     this.index = [];
     this.persistIndex();
+    return { files, artifacts, failed };
+  }
+
+  /** 该会话可重新引用的文件：历史附件 + 会话产物（供 Composer「引用对话文件」） */
+  listConversationFiles(id: string, workspaceDir: string): ConversationFileRef[] {
+    const out: ConversationFileRef[] = [];
+    const seen = new Set<string>();
+    const push = (file: string, origin: 'attachment' | 'artifact'): void => {
+      const key = path.resolve(file);
+      if (seen.has(key)) return;
+      seen.add(key);
+      const name = path.basename(file);
+      let size: number | undefined;
+      const exists = fs.existsSync(file);
+      if (exists) {
+        try {
+          size = fs.statSync(file).size;
+        } catch {
+          size = undefined;
+        }
+      }
+      out.push({
+        name,
+        path: file,
+        kind: /\.(png|jpe?g|webp|gif|bmp)$/i.test(name) ? 'image' : 'file',
+        size,
+        mime: mimeOfExt(name),
+        origin,
+        missing: !exists,
+      });
+    };
+
+    const conv = this.getConversation(id);
+    if (conv) {
+      for (const m of conv.messages) {
+        for (const a of m.attachments ?? []) {
+          if (a?.path) push(a.path, 'attachment');
+        }
+      }
+    }
+
+    const root = this.artifactsRoot(workspaceDir);
+    const scan = (dir: string, depth: number): void => {
+      if (depth > 3 || out.length >= 80) return;
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) scan(full, depth + 1);
+          else push(full, 'artifact');
+        }
+      } catch {
+        /* 目录不可读 */
+      }
+    };
+    const convDir = path.join(root, id);
+    if (fs.existsSync(convDir)) scan(convDir, 0);
+    // 0.0.3a 之前的产物直接散落在根目录，只挑文件名带本会话 id 的
     try {
-      for (const f of fs.readdirSync(this.paths.convDir)) {
-        if (f.endsWith('.json') && f !== 'index.json') fs.rmSync(path.join(this.paths.convDir, f), { force: true });
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory() || !entry.name.includes(id)) continue;
+        push(path.join(root, entry.name), 'artifact');
       }
     } catch {
-      /* 忽略 */
+      /* 目录不存在 */
     }
+    return out;
   }
 
   pinConversation(id: string, pinned: boolean): void {

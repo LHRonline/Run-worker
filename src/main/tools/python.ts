@@ -10,10 +10,10 @@ import type { ToolDefinition, ToolResult } from './types';
 
 const RETURN_LIMIT = 12_000;
 
-/** Windows 下可执行文件路径含空格时需引号包裹（spawn 的 file 参数） */
+/** spawn 不启用 shell，路径首尾的引号会被当成文件名字符，这里统一去掉 */
 export function safeExe(exe: string): string {
   const t = exe.trim();
-  if (process.platform === 'win32' && /\s/.test(t) && !/^["'].*["']$/.test(t)) return `"${t}"`;
+  if (/^["'].*["']$/.test(t)) return t.slice(1, -1);
   return t;
 }
 
@@ -57,29 +57,40 @@ export const pythonTools: ToolDefinition[] = [
       const python = safeExe(settings.agent.pythonPath.trim() || 'python');
       const timeoutMs = Math.min(600_000, Math.max(1000, Math.round(num(args, 'timeoutMs', settings.agent.commandTimeout))));
       rt.log.info('[python.exec]', python, scriptPath);
-      const res = await runProcess({ command: python, args: [scriptPath], cwd, timeoutMs, signal: tc.signal });
+      try {
+        const res = await runProcess({ command: python, args: [scriptPath], cwd, timeoutMs, signal: tc.signal });
 
-      const parts: string[] = [`脚本：${scriptPath}`, `解释器：${python}`, `工作目录：${cwd}`];
-      if (res.spawnError) {
-        return fail(
-          `无法启动 Python（${python}）：${res.spawnError}。请在设置里填写正确的 Python 路径，或确认已加入 PATH。`,
-        );
+        const parts: string[] = [`脚本：${scriptPath}`, `解释器：${python}`, `工作目录：${cwd}`];
+        if (res.spawnError) {
+          return fail(
+            `无法启动 Python（${python}）：${res.spawnError}。请在设置里填写正确的 Python 路径，或确认已加入 PATH。`,
+          );
+        }
+        if (res.aborted) parts.push('状态：已取消');
+        else if (res.timedOut) parts.push('状态：超时被终止');
+        else parts.push(`退出码：${res.exitCode ?? '未知'}`);
+        if (res.stdout.trim()) parts.push(`\n--- stdout ---\n${truncateMiddle(res.stdout.trim(), RETURN_LIMIT)}`);
+        if (res.stderr.trim()) parts.push(`\n--- stderr ---\n${truncateMiddle(res.stderr.trim(), RETURN_LIMIT / 2)}`);
+        if (!res.stdout.trim() && !res.stderr.trim()) parts.push('（没有输出）');
+        if (temp) parts.push(`\n（临时脚本已清理：${scriptPath}）`);
+
+        const success = !res.timedOut && !res.aborted && res.exitCode === 0;
+        if (success) return ok(parts.join('\n'));
+        return {
+          ok: false,
+          content: `${parts.join('\n')}\n\nPython 执行失败，请根据 stderr 修正后重试。`,
+          error: res.timedOut ? '执行超时' : res.aborted ? '已取消' : `退出码 ${res.exitCode}`,
+        };
+      } finally {
+        // 用完即删，避免 .runworker-tmp 下临时脚本无限累积
+        if (temp) {
+          try {
+            fs.unlinkSync(scriptPath);
+          } catch {
+            /* 脚本可能已被清理，忽略 */
+          }
+        }
       }
-      if (res.aborted) parts.push('状态：已取消');
-      else if (res.timedOut) parts.push('状态：超时被终止');
-      else parts.push(`退出码：${res.exitCode ?? '未知'}`);
-      if (res.stdout.trim()) parts.push(`\n--- stdout ---\n${truncateMiddle(res.stdout.trim(), RETURN_LIMIT)}`);
-      if (res.stderr.trim()) parts.push(`\n--- stderr ---\n${truncateMiddle(res.stderr.trim(), RETURN_LIMIT / 2)}`);
-      if (!res.stdout.trim() && !res.stderr.trim()) parts.push('（没有输出）');
-      if (temp) parts.push(`\n（临时脚本已保留在 ${scriptPath}）`);
-
-      const success = !res.timedOut && !res.aborted && res.exitCode === 0;
-      if (success) return ok(parts.join('\n'));
-      return {
-        ok: false,
-        content: `${parts.join('\n')}\n\nPython 执行失败，请根据 stderr 修正后重试。`,
-        error: res.timedOut ? '执行超时' : res.aborted ? '已取消' : `退出码 ${res.exitCode}`,
-      };
     },
   },
 ];

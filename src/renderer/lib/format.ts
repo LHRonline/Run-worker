@@ -17,6 +17,32 @@ export function formatTokens(n: number): string {
   return String(Math.round(n));
 }
 
+/** 精确展示：不做 k/M 缩写，直接给完整数字（带千分位） */
+export function formatTokensExact(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  return Math.round(n).toLocaleString('en-US');
+}
+
+/** 判断一组 token 数值是「API 精确」还是「本地估算」，供界面如实标注 */
+export function usageSource(u: UsageStats | undefined): {
+  label: string;
+  title: string;
+  estimated: boolean;
+} {
+  if (!u) return { label: '', title: '', estimated: false };
+  if (u.tokenSource === 'estimated') {
+    return { label: '约', title: '本地估算：服务商未返回 usage，数值为近似值', estimated: true };
+  }
+  if (u.tokenSource === 'mixed') {
+    return {
+      label: '部分估算',
+      title: `本轮共 ${u.totalRequests ?? 0} 次请求，其中 ${u.exactRequests ?? 0} 次为服务商精确值，其余为本地估算`,
+      estimated: true,
+    };
+  }
+  return { label: '精确', title: '来自服务商返回的 usage 字段，为实际计费 token', estimated: false };
+}
+
 export function formatCny(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '¥0.00';
   if (n < 0.01) return `¥${n.toFixed(4)}`;

@@ -17,7 +17,7 @@ import type {
 } from '../../shared/types';
 import { DEFAULT_USAGE } from '../../shared/types';
 import { EVT } from '../../shared/ipc';
-import { completeText } from '../llm/client';
+import { completeText, estimateTokens } from '../llm/client';
 import type { LlmMessage, LlmTarget, RawUsage } from '../llm/client';
 import { buildSystemPrompt, buildUtilityPrompt } from '../llm/prompts';
 import { chineseRatio, needsRewrite, rewriteThinkingToChinese } from '../llm/chinese';
@@ -51,8 +51,53 @@ const MEMORY_SYSTEM = [
 
 export class ChatService {
   private readonly runs = new Map<string, ActiveRun>();
+  /**
+   * 已彻底删除的会话 id。在途 run 持有 conv 对象引用，若不设屏障，
+   * 删除后 execute 的 saveConversation / 记忆抽取 / 工具写入会把会话整体「复活」。
+   */
+  private readonly deletedConversations = new Set<string>();
 
   constructor(private readonly ctx: MainContext) {}
+
+  /** 会话是否被彻底删除（execute 内每次落库前都要问一次） */
+  private isDeleted(conversationId: string): boolean {
+    return this.deletedConversations.has(conversationId);
+  }
+
+  /** 标记单个会话已删除；之后它在途 run 的所有写回都会被丢弃 */
+  markDeleted(conversationId: string): void {
+    this.deletedConversations.add(conversationId);
+    // 会话 id 单调递增，保留最近一批即可，避免长期运行无限增长
+    if (this.deletedConversations.size > 500) {
+      const first = this.deletedConversations.values().next().value;
+      if (first) this.deletedConversations.delete(first);
+    }
+  }
+
+  /** 清空全部会话时，把当时存在的所有会话都标记为已删除 */
+  markAllDeleted(): void {
+    for (const meta of this.ctx.store.listConversations()) this.markDeleted(meta.id);
+    for (const run of this.runs.values()) this.markDeleted(run.conversationId);
+  }
+
+  /** 中止某个会话的全部在途 run，返回中止数量 */
+  abortByConversation(conversationId: string): number {
+    let n = 0;
+    for (const [runId, run] of this.runs) {
+      if (run.conversationId !== conversationId) continue;
+      run.controller.abort();
+      this.ctx.approval.cancelForRun(runId);
+      n += 1;
+    }
+    return n;
+  }
+
+  /** 中止全部在途 run，返回中止数量 */
+  abortAll(): number {
+    const n = this.runs.size;
+    this.abort();
+    return n;
+  }
 
   /* ------------------------------ 对外 API ------------------------------ */
 
@@ -179,19 +224,27 @@ export class ChatService {
     };
   }
 
+  /**
+   * 汇总本轮所有请求的 usage。多步工具调用会发多次请求，必须逐轮累加才是真实消耗；
+   * 同时记录「有几轮是服务商精确值、有几轮是本地估算」，界面据此显示「精确」或「约」。
+   */
   private usageFrom(model: string, usages: RawUsage[]): UsageStats {
     let promptTokens = 0;
     let completionTokens = 0;
     let reasoningTokens = 0;
     let cachedTokens = 0;
     let totalTokens = 0;
+    let exactRequests = 0;
     for (const u of usages) {
       promptTokens += u.prompt_tokens ?? 0;
       completionTokens += u.completion_tokens ?? 0;
       reasoningTokens += u.reasoning_tokens ?? u.completion_tokens_details?.reasoning_tokens ?? 0;
       cachedTokens += u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
       totalTokens += u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
+      if (!u.__estimated) exactRequests += 1;
     }
+    const totalRequests = usages.length;
+    const estimated = totalRequests - exactRequests;
     if (totalTokens === 0) totalTokens = promptTokens + completionTokens;
     return {
       promptTokens,
@@ -200,6 +253,26 @@ export class ChatService {
       cachedTokens,
       totalTokens,
       costCny: estimateCostCny(model, promptTokens, completionTokens, cachedTokens),
+      tokenSource: estimated === 0 ? 'api' : exactRequests === 0 ? 'estimated' : 'mixed',
+      exactRequests,
+      totalRequests,
+    };
+  }
+
+  /** 演示/无 usage 时的估算统计，明确标为 estimated */
+  private estimatedUsage(promptText: string, completionText: string): UsageStats {
+    const promptTokens = estimateTokens(promptText);
+    const completionTokens = estimateTokens(completionText);
+    return {
+      promptTokens,
+      completionTokens,
+      reasoningTokens: 0,
+      cachedTokens: 0,
+      totalTokens: promptTokens + completionTokens,
+      costCny: 0,
+      tokenSource: 'estimated',
+      exactRequests: 0,
+      totalRequests: 1,
     };
   }
 
@@ -349,7 +422,7 @@ export class ChatService {
     // 3) 落用户消息
     conv.messages.push(userMessage);
     if (conv.title === '新对话' || !conv.title.trim()) conv.title = deriveTitleSafe(req.text);
-    this.ctx.store.saveConversation(conv);
+    if (!this.isDeleted(conv.id)) this.ctx.store.saveConversation(conv);
 
     /* ---------------------------- 演示模式 ---------------------------- */
     if (!resolved.target) {
@@ -422,8 +495,15 @@ export class ChatService {
       };
       conv.messages.push(demoMsg);
       conv.trace = [...(conv.trace ?? []), ...trace].slice(-200);
-      const convUsage = this.ctx.store.saveConversation(conv).usage ?? { ...DEFAULT_USAGE };
-      emitRun({ type: 'run:usage', runId, usage: { ...DEFAULT_USAGE }, conversationUsage: convUsage });
+      // 演示模式没有服务端 usage，给一个明确标注为「估算」的值，而不是误导性的 0 token
+      demoMsg.usage = this.estimatedUsage(req.text, demoText);
+      const saved = this.isDeleted(conv.id) ? null : this.ctx.store.saveConversation(conv);
+      emitRun({
+        type: 'run:usage',
+        runId,
+        usage: demoMsg.usage,
+        conversationUsage: saved?.usage ?? conv.usage ?? { ...DEFAULT_USAGE },
+      });
       end(signal.aborted ? 'aborted' : 'done', demoMsg.id);
       return { text: demoText, conversationId: conv.id };
     }
@@ -488,7 +568,7 @@ export class ChatService {
     let thinking = '';
     let toolCalls: ToolCallRecord[] = [];
     let usages: RawUsage[] = [];
-    const rt = makeToolRuntime(this.ctx, runId, notify);
+    const rt = makeToolRuntime(this.ctx, runId, notify, conv.id);
 
     try {
       const result = await runAgentLoop({
@@ -500,12 +580,14 @@ export class ChatService {
         maxOutputTokens: settings.tokenSave.maxOutputTokens,
         toolsEnabled: true,
         toolOutputLimit: settings.tokenSave.toolOutputLimit,
+        conversationId: conv.id,
         signal,
         deps: { runId, rt, emitRun },
         onDelta: (delta) => emitRun({ type: 'run:content', runId, delta }),
         onReasoning: (delta) => {
           if (thinkingVisible) emitRun({ type: 'run:thinking', runId, delta });
         },
+        onStepStart: (step) => emitRun({ type: 'run:step', runId, step }),
       });
       content = result.text;
       thinking = thinkingVisible ? result.reasoning : '';
@@ -526,6 +608,7 @@ export class ChatService {
       const message = err instanceof Error ? err.message : String(err);
       if (!aborted) this.ctx.log.error('[chat] 模型调用失败', err);
 
+      const partial = this.usageFrom(target.model, usages);
       const failMsg: ChatMessage = {
         id: `msg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         role: 'assistant',
@@ -535,12 +618,13 @@ export class ChatService {
         agentId: agent,
         model: target.model,
         providerId: target.providerId,
+        usage: (partial.totalRequests ?? 0) > 0 ? partial : undefined,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         status: aborted ? 'aborted' : 'error',
         error: aborted ? undefined : message,
       };
       conv.messages.push(failMsg);
-      this.ctx.store.saveConversation(conv);
+      if (!this.isDeleted(conv.id)) this.ctx.store.saveConversation(conv);
       if (!aborted) notify('error', message);
       end(aborted ? 'aborted' : 'error', failMsg.id, aborted ? undefined : message);
       return { text: content, conversationId: conv.id };
@@ -603,23 +687,27 @@ export class ChatService {
     };
     conv.messages.push(assistant);
     conv.trace = [...(conv.trace ?? []), ...trace].slice(-200);
-    const saved = this.ctx.store.saveConversation(conv);
+    const saved = this.isDeleted(conv.id) ? null : this.ctx.store.saveConversation(conv);
+    const conversationUsage = saved?.usage ?? conv.usage ?? { ...DEFAULT_USAGE };
 
     if (assistant.citations && assistant.citations.length > 0) {
       emitRun({ type: 'run:citation', runId, citations: assistant.citations });
     }
-    emitRun({ type: 'run:usage', runId, usage, conversationUsage: saved.usage ?? { ...DEFAULT_USAGE } });
+    emitRun({ type: 'run:usage', runId, usage, conversationUsage });
 
     const budget = settings.tokenSave.budgetAlertCny;
-    if (budget > 0 && (saved.usage?.costCny ?? 0) > budget) {
-      notify('warn', `本对话累计成本约 ¥${(saved.usage?.costCny ?? 0).toFixed(2)}，已超过预算提醒线 ¥${budget}。`);
+    if (budget > 0 && conversationUsage.costCny > budget) {
+      notify('warn', `本对话累计成本约 ¥${conversationUsage.costCny.toFixed(2)}，已超过预算提醒线 ¥${budget}。`);
     }
 
     end(signal.aborted ? 'aborted' : 'done', assistant.id);
 
     /* ------------------------- 长期记忆抽取 ------------------------- */
-    if (settings.memory.enabled && settings.memory.longTerm && settings.memory.autoExtract && !signal.aborted) {
-      void this.extractMemory(target, req.text, content).catch((err) => {
+    if (
+      settings.memory.enabled && settings.memory.longTerm && settings.memory.autoExtract &&
+      !signal.aborted && !this.isDeleted(conv.id)
+    ) {
+      void this.extractMemory(target, req.text, content, conv.id, signal).catch((err) => {
         this.ctx.log.warn('[chat] 记忆抽取失败（已忽略）', err);
       });
     }
@@ -633,13 +721,28 @@ export class ChatService {
   }
 
   /** 用一次轻量调用抽取 0-3 条长期记忆 */
-  private async extractMemory(target: LlmTarget, question: string, answer: string): Promise<void> {
+  private async extractMemory(
+    target: LlmTarget,
+    question: string,
+    answer: string,
+    conversationId: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!question.trim() || !answer.trim()) return;
     const raw = await completeText(
       target,
       `用户：${question.slice(0, 800)}\n\n助手：${answer.slice(0, 1200)}`,
-      { system: buildUtilityPrompt(MEMORY_SYSTEM), maxTokens: 300, temperature: 0, json: true, timeoutMs: 20_000 },
+      {
+        system: buildUtilityPrompt(MEMORY_SYSTEM),
+        maxTokens: 300,
+        temperature: 0,
+        json: true,
+        timeoutMs: 20_000,
+        signal,
+      },
     );
+    // 会话已被彻底删除或用户已停止：不能把刚清掉的记忆又写回去
+    if (signal?.aborted || (conversationId && this.isDeleted(conversationId))) return;
     const start = raw.indexOf('{');
     const end = raw.lastIndexOf('}');
     if (start < 0 || end <= start) return;
@@ -651,6 +754,7 @@ export class ChatService {
     }
     const facts = (parsed.facts ?? []).filter((f) => typeof f.text === 'string' && f.text.trim().length >= 4).slice(0, 3);
     for (const f of facts) {
+      if (signal?.aborted || (conversationId && this.isDeleted(conversationId))) return;
       const kind = ['preference', 'fact', 'project', 'instruction'].includes(f.kind ?? '')
         ? (f.kind as 'preference' | 'fact' | 'project' | 'instruction')
         : 'fact';
@@ -658,7 +762,7 @@ export class ChatService {
         text: (f.text ?? '').trim().slice(0, 200),
         kind,
         weight: typeof f.weight === 'number' ? Math.min(1, Math.max(0, f.weight)) : 0.55,
-        source: 'auto',
+        source: conversationId ? `auto:${conversationId}` : 'auto',
       });
     }
   }

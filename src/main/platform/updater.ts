@@ -1,20 +1,31 @@
 /**
- * 更新检测（Updater）
+ * 更新检测 + 应用内一键升级（Updater）
  *
- * 只做「检查」，不下载安装：
  *  - feed 是 owner/repo → GitHub Releases API；
  *  - feed 是 http(s) 地址 → 直接取该 JSON，兼容 { version, notes, url } 结构；
  *  - 结果缓存 30 分钟（<dataDir>/update/cache.json），force 忽略缓存；
+ *  - install() 下载安装包 → SHA-256 校验 → 拉起静默安装器，进度用 EVT.updateProgress 推送；
  *  - 任何网络异常都转成中文 error 字段，绝不抛给调用方。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { EVT } from '../../shared/ipc';
 import type { PlatformDeps, Updater } from '../../shared/platform';
-import type { UpdateInfo } from '../../shared/types';
+import type { UpdateInfo, UpdateProgress } from '../../shared/types';
+import { writeJsonAtomic } from '../store';
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_INSTALLER_BYTES = 300 * 1024 * 1024;
+
+interface WebReadableStream {
+  getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<void> };
+}
 
 type FetchLike = (
   url: string,
@@ -24,6 +35,7 @@ type FetchLike = (
   status: number;
   headers: { get(name: string): string | null };
   text(): Promise<string>;
+  body?: WebReadableStream | null;
 }>;
 
 interface CacheFile {
@@ -132,12 +144,6 @@ export function compareVersion(a: string, b: string): number {
     }
   }
   return 0;
-}
-
-function writeJsonAtomic(file: string, data: unknown): void {
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-  fs.renameSync(tmp, file);
 }
 
 /** HTTP 错误转中文文案：区分仓库不存在 / 无权限 / 限流 / 服务不可用 */
@@ -400,6 +406,153 @@ export function createUpdater(deps: PlatformDeps & { appVersion: string; repoUrl
     return last;
   }
 
+  /* ----------------------- 应用内一键升级 ----------------------- */
+
+  let installing: Promise<UpdateProgress> | null = null;
+
+  function pushProgress(p: UpdateProgress): UpdateProgress {
+    try {
+      deps.emit(EVT.updateProgress, p);
+    } catch (err) {
+      deps.log.warn('[updater] 推送升级进度失败', err);
+    }
+    return p;
+  }
+
+  function fail(text: string, localPath?: string): UpdateProgress {
+    return pushProgress({ stage: 'error', percent: 0, text, error: text, localPath });
+  }
+
+  /** 流式下载 + SHA-256 边下边算，返回摘要 hex */
+  async function downloadInstaller(url: string, dest: string, info: UpdateInfo): Promise<string> {
+    const doFetch = getFetch();
+    if (!doFetch) throw new Error('当前运行环境不支持网络请求，无法下载更新');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+    let res: Awaited<ReturnType<FetchLike>>;
+    try {
+      res = await doFetch(url, {
+        method: 'GET',
+        headers: { 'User-Agent': `Run-worker/${deps.appVersion}`, Accept: 'application/octet-stream' },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      throw new Error(`下载失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!res.ok) {
+      clearTimeout(timer);
+      throw new Error(`下载失败：安装包地址返回 HTTP ${res.status}`);
+    }
+    const total = Number(res.headers.get('content-length')) || 0;
+    if (total > MAX_INSTALLER_BYTES) {
+      clearTimeout(timer);
+      throw new Error('安装包体积异常（超过 300 MB），已中止下载');
+    }
+    if (!res.body) {
+      clearTimeout(timer);
+      throw new Error('下载源未返回数据流，请改用「打开下载页」手动下载');
+    }
+
+    pushProgress({
+      stage: 'downloading', percent: 0, text: '正在连接下载源…',
+      received: 0, total: total || undefined,
+    });
+
+    const hash = crypto.createHash('sha256');
+    let received = 0;
+    let lastPct = -1;
+    let lastEmit = 0;
+    const progressStream = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        received += chunk.length;
+        hash.update(chunk);
+        if (received > MAX_INSTALLER_BYTES) {
+          cb(new Error('安装包体积异常（超过 300 MB），已中止下载'));
+          return;
+        }
+        const now = Date.now();
+        const pct = total ? Math.min(99, Math.floor((received / total) * 100)) : -1;
+        if (now - lastEmit > 120 && pct !== lastPct) {
+          lastEmit = now;
+          lastPct = pct;
+          pushProgress({
+            stage: 'downloading',
+            percent: pct,
+            text: total
+              ? `正在下载安装包 ${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`
+              : `正在下载安装包 ${(received / 1048576).toFixed(1)} MB`,
+            received,
+            total: total || undefined,
+          });
+        }
+        cb(null, chunk);
+      },
+    });
+
+    const tmp = `${dest}.part`;
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      try { fs.rmSync(tmp, { force: true }); } catch { /* 无残留 */ }
+      const web = res.body as unknown as import('node:stream/web').ReadableStream;
+      await pipeline(Readable.fromWeb(web), progressStream, fs.createWriteStream(tmp));
+    } finally {
+      clearTimeout(timer);
+    }
+
+    pushProgress({
+      stage: 'verifying', percent: 100, text: '正在校验安装包完整性…',
+      received, total: total || undefined,
+    });
+    const digest = hash.digest('hex');
+    const expected = String(info.assetSha256 ?? '').trim().toLowerCase().replace(/^sha256[:=]/, '');
+    if (expected) {
+      if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error('更新源提供的 SHA-256 格式不正确，已中止安装');
+      if (digest !== expected) {
+        try { fs.rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
+        throw new Error('安装包 SHA-256 校验不通过，已删除下载文件。请重试或手动从发布页下载。');
+      }
+    } else {
+      deps.log.warn('[updater] 更新源未提供 SHA-256，已跳过散列校验');
+    }
+    try { fs.rmSync(dest, { force: true }); } catch { /* 忽略 */ }
+    fs.renameSync(tmp, dest);
+    return digest;
+  }
+
+  async function doInstall(): Promise<UpdateProgress> {
+    const info = last ?? (await doCheck());
+    if (!info?.available) return fail('当前已是最新版本，无需升级。');
+    const url = info.downloadUrl;
+    if (!url || !/^https?:\/\//i.test(url)) {
+      return fail('该版本没有可用的安装包下载地址，请点击「打开下载页」手动升级。');
+    }
+    const dest = path.join(dir, `Run-worker-${info.latestVersion}-setup.exe`);
+    try {
+      await downloadInstaller(url, dest, info);
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err), dest);
+    }
+    if (process.platform !== 'win32') {
+      return pushProgress({ stage: 'done', percent: 100, text: `安装包已下载：${dest}`, localPath: dest });
+    }
+    try {
+      // 独立进程、忽略 stdio；主程序随后退出，安装器才能覆盖被占用的文件
+      const child = spawn(dest, ['/S'], { detached: true, stdio: 'ignore', windowsHide: true });
+      child.on('error', (err) => deps.log.warn('[updater] 启动安装器失败', err));
+      child.unref();
+    } catch (err) {
+      return fail(`无法启动安装器：${err instanceof Error ? err.message : String(err)}`, dest);
+    }
+    return pushProgress({
+      stage: 'installing',
+      percent: 100,
+      text: `已启动 ${info.latestVersion} 安装程序，Run worker 即将退出以完成升级。`,
+      localPath: dest,
+    });
+  }
+
   const cached = readCache();
   if (cached) last = cached.info;
 
@@ -431,6 +584,20 @@ export function createUpdater(deps: PlatformDeps & { appVersion: string; repoUrl
 
     current(): UpdateInfo | null {
       return last;
+    },
+
+    install(): Promise<UpdateProgress> {
+      if (installing) return installing;
+      installing = doInstall()
+        .catch((err): UpdateProgress => {
+          const text = err instanceof Error ? err.message : String(err);
+          deps.log.error('[updater] 一键升级异常', err);
+          return fail(`升级失败：${text}`);
+        })
+        .finally(() => {
+          installing = null;
+        });
+      return installing;
     },
   };
 }

@@ -9,6 +9,7 @@ import type { ToolDefinition, ToolResult } from './types';
 import { resolveToolPath } from './fs';
 
 const MAX_BODY = 600_000;
+const MAX_DOWNLOAD = 20 * 1024 * 1024;
 
 export const netTools: ToolDefinition[] = [
   {
@@ -60,8 +61,19 @@ export const netTools: ToolDefinition[] = [
         const savePath = str(args, 'savePath');
 
         if (savePath) {
+          // 错误页不能当成"下载成功"落盘
+          if (!res.ok) {
+            return { ok: false, content: `${rawUrl}\n下载失败：HTTP ${res.status} ${res.statusText}`, error: `HTTP ${res.status}` };
+          }
           const target = resolveToolPath(rt.workspace(), savePath);
+          const verdict = rt.permissions.inspectFileWrite(target);
+          if (!verdict.allowed) return fail(verdict.reason);
+          // 先用 Content-Length 预检，避免把超大响应读进内存
+          const declared = Number(res.headers.get('content-length') || 0);
+          if (declared > MAX_DOWNLOAD) return fail(`下载内容过大（${declared} 字节），超过上限 ${MAX_DOWNLOAD} 字节。`);
           const buf = Buffer.from(await res.arrayBuffer());
+          // 无 Content-Length 时以下载后的实际长度复核
+          if (buf.length > MAX_DOWNLOAD) return fail(`下载内容过大（${buf.length} 字节），超过上限 ${MAX_DOWNLOAD} 字节。`);
           fs.mkdirSync(path.dirname(target), { recursive: true });
           fs.writeFileSync(target, buf);
           return ok(`已下载：${rawUrl}\n状态：${res.status}\n类型：${contentType}\n保存到：${target}（${buf.length} 字节）`);

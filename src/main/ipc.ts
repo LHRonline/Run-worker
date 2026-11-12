@@ -4,7 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron';
 import type { OpenDialogOptions } from 'electron';
 import { EVT, IPC } from '../shared/ipc';
 import type { DeepPartial } from '../shared/ipc';
@@ -231,11 +231,44 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
 
   handle(IPC.convRemove, (id: string) => {
     if (!id) throw new Error('缺少会话 id。');
-    ctx.store.deleteConversation(id);
+    // 1) 先中止在途 run 并打删除屏障：否则 execute 的落库/记忆抽取会把刚删掉的会话整体写回
+    const runs = ctx.chat.abortByConversation(id);
+    ctx.chat.markDeleted(id);
+    // 2) 该会话派生的长期记忆（自动抽取、工具写入、用户纠正）
+    const before = ctx.memory.list().length;
+    ctx.memory.forgetBySource([`auto:${id}`, `tool:${id}`, `feedback:${id}`]);
+    const memories = before - ctx.memory.list().length;
+    // 3) 会话文件 + 索引 + 产物（含旧版散落文件）
+    const conv = ctx.store.deleteConversation(id);
+    const artifacts = ctx.store.purgeConversationArtifacts(id, ctx.workspace());
+    return {
+      files: conv.files,
+      artifacts: artifacts.files,
+      memories,
+      runs,
+      failed: [...conv.failed, ...artifacts.failed],
+    };
   });
 
   handle(IPC.convClear, () => {
-    ctx.store.clearConversations();
+    const runs = ctx.chat.abortAll();
+    ctx.chat.markAllDeleted();
+    const before = ctx.memory.list().length;
+    ctx.memory.forgetBySource(['auto', 'tool', 'feedback']);
+    const memories = before - ctx.memory.list().length;
+    const conv = ctx.store.clearConversations(ctx.workspace());
+    return {
+      files: conv.files,
+      artifacts: conv.artifacts,
+      memories,
+      runs,
+      failed: conv.failed,
+    };
+  });
+
+  handle(IPC.convFiles, (id: string) => {
+    if (!id) throw new Error('缺少会话 id。');
+    return ctx.store.listConversationFiles(id, ctx.workspace());
   });
 
   handle(IPC.convPin, (payload: { id: string; pinned: boolean }) => {
@@ -345,5 +378,14 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
     const url = info?.releaseUrl || info?.downloadUrl || ctx.appInfo.repoUrl;
     if (!/^https?:\/\//i.test(url)) throw new Error('没有可打开的更新地址。');
     await shell.openExternal(url);
+  });
+
+  handle(IPC.updateInstall, async () => {
+    const progress = await ctx.updater.install();
+    if (progress.stage === 'installing') {
+      // 安装器已独立启动；主程序退出后它才能覆盖被占用的 exe / app.asar
+      setTimeout(() => app.quit(), 1500);
+    }
+    return progress;
   });
 }

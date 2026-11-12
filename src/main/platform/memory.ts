@@ -39,15 +39,12 @@ function normalizeText(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
-/** 字符集合 Jaccard 相似度 */
-function jaccard(a: string, b: string): number {
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  const setA = new Set(a);
-  const setB = new Set(b);
+/** 字符集合 Jaccard 相似度（入参为缓存好的字符集合，避免每次 add 重新构造） */
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
   let inter = 0;
-  for (const ch of setA) if (setB.has(ch)) inter += 1;
-  const union = setA.size + setB.size - inter;
+  for (const ch of a) if (b.has(ch)) inter += 1;
+  const union = a.size + b.size - inter;
   return union === 0 ? 0 : inter / union;
 }
 
@@ -98,6 +95,28 @@ export function createMemoryStore(deps: PlatformDeps): MemoryStore {
 
   let facts: MemoryFact[] = [];
   let seq = 0;
+
+  interface NormCacheEntry {
+    /** 归一化后的文本 */
+    norm: string;
+    /** 归一化文本的字符集合，供 Jaccard 复用 */
+    chars: Set<string>;
+  }
+
+  /** 以 fact 对象为键缓存归一化结果：不改持久化 JSON 形状（缓存只存在于内存）。
+   *  WeakMap 随 fact 被替换 / 删除自动失效，forget / clear / 重新载入后
+   *  旧对象不再被引用，缓存天然保持一致，无需手动清理。 */
+  const normCache = new WeakMap<MemoryFact, NormCacheEntry>();
+
+  function normEntry(f: MemoryFact): NormCacheEntry {
+    let entry = normCache.get(f);
+    if (!entry) {
+      const norm = normalizeText(f.text);
+      entry = { norm, chars: new Set(norm) };
+      normCache.set(f, entry);
+    }
+    return entry;
+  }
 
   function nextId(): string {
     seq += 1;
@@ -176,12 +195,14 @@ export function createMemoryStore(deps: PlatformDeps): MemoryStore {
       const now = Date.now();
       const weight = clampWeight(Number(input.weight ?? 0.6));
       const norm = normalizeText(text);
+      const queryChars = new Set(norm);
 
-      // 与已有记忆做相似度比较，命中则合并
+      // 与已有记忆做相似度比较：已有条目复用缓存的归一化字符集合，
+      // 避免每次 add 对全部 facts 重新 normalizeText / 重新构造 Set（O(n·L) 重复计算）
       let best: MemoryFact | null = null;
       let bestScore = 0;
       for (const f of facts) {
-        const score = jaccard(norm, normalizeText(f.text));
+        const score = jaccard(queryChars, normEntry(f).chars);
         if (score > bestScore) {
           bestScore = score;
           best = f;
@@ -189,14 +210,29 @@ export function createMemoryStore(deps: PlatformDeps): MemoryStore {
       }
 
       if (best && bestScore > DUP_THRESHOLD) {
-        best.text = text.length > best.text.length ? text : best.text;
+        const longer = text.length > best.text.length ? text : best.text;
+        if (longer !== best.text) {
+          best.text = longer;
+          // 文本变化后旧缓存失效，下次比较时惰性重算
+          normCache.delete(best);
+        }
         best.weight = clampWeight(Math.max(best.weight, weight) + 0.08);
         best.updatedAt = now;
         best.hits += 1;
         if (input.kind) best.kind = input.kind;
+        // 合并来源：多来源以逗号分隔追加到 source 字符串（不新增字段、不改持久化形状），
+        // 保证 forgetBySource 删除任一派生会话时都能命中这条合并记忆
+        const incoming = String(input.source ?? '').trim();
+        if (incoming) {
+          const parts = (best.source ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+          if (!parts.includes(incoming)) {
+            parts.push(incoming);
+            best.source = parts.join(',');
+          }
+        }
         deps.log.info(`[memory] 合并相似记忆（相似度 ${bestScore.toFixed(2)}）`);
       } else {
-        facts.push({
+        const fact: MemoryFact = {
           id: typeof input.id === 'string' && input.id ? input.id : nextId(),
           kind: (input.kind ?? 'fact') as MemoryKind,
           text,
@@ -205,7 +241,10 @@ export function createMemoryStore(deps: PlatformDeps): MemoryStore {
           updatedAt: now,
           hits: 0,
           source: input.source,
-        });
+        };
+        facts.push(fact);
+        // 新条目直接复用本次算好的归一化结果
+        normCache.set(fact, { norm, chars: queryChars });
       }
 
       enforceLimit();
@@ -217,6 +256,30 @@ export function createMemoryStore(deps: PlatformDeps): MemoryStore {
       const before = facts.length;
       facts = facts.filter((f) => f.id !== id);
       if (facts.length !== before) persist();
+      return sortFacts(facts);
+    },
+
+    /** 按来源批量删除：source 与给定值完全相等，或以 `${source}:` 开头（如 auto:conv_123）都算命中。
+     *  合并记忆的 source 可能是逗号分隔的多来源，拆分后逐个匹配，命中任一来源即删除该条
+     *  （删除会话要彻底清掉它派生出的记忆）。 */
+    forgetBySource(source: string | string[]): MemoryFact[] {
+      const keys = (Array.isArray(source) ? source : [source]).map((s) => String(s ?? '').trim()).filter(Boolean);
+      if (keys.length === 0) return sortFacts(facts);
+      const matchKey = (s: string): boolean => keys.some((k) => s === k || s.startsWith(`${k}:`));
+      const hit = (raw: string): boolean => {
+        if (!raw) return false;
+        return raw
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .some(matchKey);
+      };
+      const before = facts.length;
+      facts = facts.filter((f) => !hit((f.source ?? '').trim()));
+      if (facts.length !== before) {
+        deps.log.info(`[memory] 按来源清理记忆 ${before - facts.length} 条（source=${keys.join('/')}）`);
+        persist();
+      }
       return sortFacts(facts);
     },
 

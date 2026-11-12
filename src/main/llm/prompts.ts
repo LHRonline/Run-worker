@@ -43,6 +43,11 @@ function personaBlock(persona: PersonaSettings): string {
     lines.push('不寒暄、不复述问题、不输出免责声明，第一句就是结论。');
     lines.push('禁止「好的」「当然可以」「希望对你有帮助」这类填充语。');
   }
+  if (persona.humanize) {
+    lines.push('像一个靠谱的同事那样协作：用自然、平实的中文，不套模板、不堆套话。');
+    lines.push('记住本轮及长期记忆里已经说过的约定，不重复追问已经给过的信息；不确定对方意图时先简短确认，不要自作主张。');
+    lines.push('被纠正时先承认，再直接按新要求给出修正结果，不辩解、不复述旧答案；做错了就说明错在哪、怎么补。');
+  }
   const v = Math.min(5, Math.max(1, Math.round(persona.verbosity)));
   lines.push(VERBOSITY_RULES[v]);
   return lines.filter(Boolean).join('\n');
@@ -82,7 +87,11 @@ function dutyBlock(parts: PromptParts): string {
 function memoryBlock(parts: PromptParts): string {
   const text = (parts.memory || '').trim();
   if (!text) return '';
-  return `以下是用户长期偏好与事实（已在历史中确认，可直接采用，无需再问）：\n${text}`;
+  return [
+    '以下是用户长期偏好与事实（已在历史中确认，可直接采用，无需再问）：',
+    '其中标记为【要求】的条目来自用户主动纠正，优先级最高，必须遵守；与其它条目冲突时以【要求】为准。',
+    text,
+  ].join('\n');
 }
 
 function knowledgeBlock(parts: PromptParts): string {

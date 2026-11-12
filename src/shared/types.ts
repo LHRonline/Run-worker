@@ -85,6 +85,8 @@ export interface PersonaSettings {
   noFiller: boolean;
   /** 优先给可执行结论与代码，而非解释 */
   resultFirst: boolean;
+  /** 像人一样协作：自然语气、记住上下文约定、被纠正时直接改 */
+  humanize: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -116,6 +118,14 @@ export interface UsageStats {
   cachedTokens: number;
   totalTokens: number;
   costCny: number;
+  /**
+   * token 数值的来源。api = 服务商 usage 字段（精确）；estimated = 本地字符估算（近似）；
+   * mixed = 多轮里既有精确值也有估算值。缺省视为 api，兼容旧数据。
+   */
+  tokenSource?: 'api' | 'estimated' | 'mixed';
+  /** 精确统计到的请求轮数 / 总请求轮数，用于解释 mixed */
+  exactRequests?: number;
+  totalRequests?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -264,6 +274,8 @@ export type RunEvent =
   | { type: 'run:thinking'; runId: string; delta: string }
   | { type: 'run:thinking-lang'; runId: string; ratio: number; rewritten: boolean }
   | { type: 'run:content'; runId: string; delta: string }
+  /** 多步工具调用进入下一轮：界面应清掉上一轮的过渡文本，与最终落库内容保持一致 */
+  | { type: 'run:step'; runId: string; step: number }
   | { type: 'run:tool'; runId: string; call: ToolCallRecord }
   | { type: 'run:citation'; runId: string; citations: Citation[] }
   | { type: 'run:usage'; runId: string; usage: UsageStats; conversationUsage: UsageStats }
@@ -534,6 +546,46 @@ export interface BootstrapPayload {
   app: AppInfo;
 }
 
+/** 彻底删除会话后的擦除报告：告诉用户到底清掉了什么 */
+export interface ConversationPurgeReport {
+  /** 删除的会话文件与残留文件数 */
+  files: number;
+  /** 删除的产物文件数（图片 / 生成物等） */
+  artifacts: number;
+  /** 删除的长期记忆条数（由该会话派生） */
+  memories: number;
+  /** 被中止的在途任务数（防止删完又被写回） */
+  runs: number;
+  /** 未能删除的路径（一般是文件被占用） */
+  failed: string[];
+}
+
+/** 可重新引用的文件：会话里出现过的附件，或该会话产生的产物 */
+export interface ConversationFileRef {
+  name: string;
+  path: string;
+  kind: 'image' | 'file';
+  size?: number;
+  mime?: string;
+  /** attachment = 用户添加过的文件；artifact = 本会话生成的文件 */
+  origin: 'attachment' | 'artifact';
+  /** 是否已不存在于磁盘 */
+  missing?: boolean;
+}
+
+/** 应用内一键升级的实时进度（主进程 → 渲染进程） */
+export interface UpdateProgress {
+  stage: 'idle' | 'downloading' | 'verifying' | 'installing' | 'done' | 'error';
+  /** 0~100 */
+  percent: number;
+  text: string;
+  /** 已下载字节 / 总字节 */
+  received?: number;
+  total?: number;
+  localPath?: string;
+  error?: string;
+}
+
 export const DEFAULT_USAGE: UsageStats = {
   promptTokens: 0,
   completionTokens: 0,
@@ -541,4 +593,7 @@ export const DEFAULT_USAGE: UsageStats = {
   cachedTokens: 0,
   totalTokens: 0,
   costCny: 0,
+  tokenSource: 'api',
+  exactRequests: 0,
+  totalRequests: 0,
 };

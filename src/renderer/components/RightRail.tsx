@@ -1,6 +1,6 @@
 import type { Conversation } from '@shared/types';
 import { AGENT_MAP } from '@shared/agents';
-import { estimateTokens, formatCny, formatDuration, formatTokens, formatClock } from '../lib/format';
+import { estimateTokens, formatCny, formatDuration, formatTokensExact, formatClock, usageSource } from '../lib/format';
 import type { RunInfo } from '../state/store';
 
 const STATUS_TEXT: Record<string, string> = {
@@ -33,6 +33,8 @@ export function RightRail({
   const reasoningTokens = usage?.reasoningTokens ?? (last?.thinking ? estimateTokens(last.thinking) : 0);
   const totalTokens = usage?.totalTokens ?? promptTokens + completionTokens + reasoningTokens;
   const tools = last?.toolCalls ?? [];
+  const source = usageSource(usage);
+  const streaming = last?.status === 'streaming';
 
   const steps: { title: string; sub?: string; state: 'done' | 'running' | 'idle' }[] = [];
   if (last) {
@@ -114,22 +116,36 @@ export function RightRail({
             </div>
 
             <div className="rail-block">
-              <div className="rail-block-title">Token 计量</div>
+              <div className="rail-block-title">
+                Token 计量
+                {usage ? (
+                  <span className={`tok-src${source.estimated ? ' est' : ''}`} title={source.title} style={{ marginLeft: 6 }}>
+                    {source.label}
+                  </span>
+                ) : streaming ? (
+                  <span className="tok-src est" title="生成结束前只显示本地估算" style={{ marginLeft: 6 }}>实时估算</span>
+                ) : null}
+              </div>
+              {usage ? (
+                <div className="rail-hint" style={{ fontSize: 10, color: 'var(--faint)', marginBottom: 6 }}>
+                  {source.estimated ? source.title : '服务商 usage 精确值，已按本轮全部请求累加'}
+                </div>
+              ) : null}
               <div className="rail-kv">
                 <span className="k">输入</span>
-                <span className="v">{formatTokens(promptTokens)}</span>
+                <span className="v">{formatTokensExact(promptTokens)}</span>
               </div>
               <div className="rail-kv">
                 <span className="k">输出</span>
-                <span className="v">{formatTokens(completionTokens)}</span>
+                <span className="v">{formatTokensExact(completionTokens)}</span>
               </div>
               <div className="rail-kv">
                 <span className="k">思考</span>
-                <span className="v">{formatTokens(reasoningTokens)}</span>
+                <span className="v">{formatTokensExact(reasoningTokens)}</span>
               </div>
               <div className="rail-kv">
                 <span className="k">本轮合计</span>
-                <span className="v" style={{ color: 'var(--accent-text)' }}>{formatTokens(totalTokens)} tok</span>
+                <span className="v" style={{ color: 'var(--accent-text)' }}>{formatTokensExact(totalTokens)} tok</span>
               </div>
               <div className="rail-kv">
                 <span className="k">本轮费用</span>
@@ -137,8 +153,14 @@ export function RightRail({
               </div>
               <div className="rail-kv">
                 <span className="k">会话累计</span>
-                <span className="v">{formatTokens(conversation?.usage.totalTokens ?? 0)} tok</span>
+                <span className="v">{formatTokensExact(conversation?.usage.totalTokens ?? 0)} tok</span>
               </div>
+              {usage?.totalRequests && usage.totalRequests > 1 ? (
+                <div className="rail-kv">
+                  <span className="k">请求轮数</span>
+                  <span className="v">{usage.totalRequests} 轮</span>
+                </div>
+              ) : null}
             </div>
 
             <div className="rail-block">

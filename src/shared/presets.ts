@@ -2,7 +2,7 @@
  * Run worker — 内置服务商预设与默认设置
  * 所有"免费可用"的渠道都标注了 free: true，免费模式会优先挑选它们。
  */
-import type { ProviderPreset, Settings } from './types';
+import type { PersonaPreset, ProviderPreset, Settings } from './types';
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
@@ -125,6 +125,7 @@ export function createDefaultSettings(): Settings {
       temperature: 0.6,
       noFiller: true,
       resultFirst: true,
+      humanize: true,
     },
     tokenSave: {
       enabled: true,
@@ -170,3 +171,103 @@ export function createDefaultSettings(): Settings {
     updatedAt: now,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Composer 增强菜单：模式 / 技能                                       */
+/* ------------------------------------------------------------------ */
+
+export const PERSONA_PRESET_META: Array<{
+  id: PersonaPreset;
+  label: string;
+  icon: string;
+  hint: string;
+  patch: { noFiller: boolean; resultFirst: boolean; verbosity: number };
+}> = [
+  { id: 'direct', label: '直给', icon: '⚡', hint: '先给结论与可执行动作，不寒暄', patch: { noFiller: true, resultFirst: true, verbosity: 2 } },
+  { id: 'balanced', label: '均衡', icon: '◐', hint: '结论 + 最少的必要解释', patch: { noFiller: false, resultFirst: true, verbosity: 3 } },
+  { id: 'teaching', label: '教学', icon: '✦', hint: '讲清原理、常见坑与示例', patch: { noFiller: false, resultFirst: false, verbosity: 4 } },
+  { id: 'cold', label: '极简', icon: '▬', hint: '只给事实与步骤，句子极短', patch: { noFiller: true, resultFirst: true, verbosity: 1 } },
+];
+
+export interface ComposerSkill {
+  id: string;
+  label: string;
+  icon: string;
+  hint: string;
+  /** {text} 会替换为输入框里已有的内容 */
+  template: string;
+}
+
+export const COMPOSER_SKILLS: ComposerSkill[] = [
+  { id: 'summarize', label: '总结要点', icon: '≡', hint: '把内容压成 3-5 条要点', template: '请把下面的内容总结成 3-5 条要点，保留关键结论与数字：\n\n{text}' },
+  { id: 'rewrite', label: '改写润色', icon: '✎', hint: '保持原意，改得更清楚简洁', template: '在保持原意与事实不变的前提下，把下面这段改得更清楚、简洁、易读：\n\n{text}' },
+  { id: 'explain', label: '解释原理', icon: '◇', hint: '讲清为什么和一个最小例子', template: '请解释下面内容的原理与关键假设，并给一个最小可运行的例子：\n\n{text}' },
+  { id: 'plan', label: '拆解任务', icon: '▤', hint: '列成可执行的步骤清单', template: '把下面这件事拆成可执行步骤，标出每步的产出、所需工具和可能的坑：\n\n{text}' },
+  { id: 'review', label: '审查找错', icon: '⌕', hint: '找逻辑错误、边界与安全风险', template: '请审查下面的内容，找出逻辑错误、边界条件遗漏与潜在风险，按严重程度排序并给出修正建议：\n\n{text}' },
+  { id: 'translate', label: '中英互译', icon: '↔', hint: '保留术语与代码块原样', template: '把下面内容在中英文之间互译；保留代码、命令、专有名词原样，不要添加解释：\n\n{text}' },
+];
+
+/** 本次更新的展示内容（界面「本次更新」面板与发布说明共用同一份数据） */
+export interface ReleaseNoteSection {
+  title: string;
+  icon: string;
+  items: string[];
+}
+
+export const CURRENT_RELEASE_NOTES: {
+  summary: string;
+  sections: ReleaseNoteSection[];
+} = {
+  summary: '彻底删除更干净、看得见的 token 数字、应用内一键升级，以及一轮全面的 Bug 修复与算法优化。',
+  sections: [
+    {
+      title: '新增',
+      icon: '✚',
+      items: [
+        'Composer 增强菜单：添加文件、引用对话文件、模式、专家、技能、连接器一屏可达',
+        '精确 Token 计量：逐轮累加服务商 usage，明确区分「API 精确」与「本地估算」',
+        '应用内一键升级：自动下载安装包、SHA-256 校验、拉起静默安装并退出应用',
+        '自我改进：可对任意回复提交「纠正」，写入长期记忆并在后续提示词中优先遵守',
+        '更像人：新增人设层，自然协作、记住约定、被纠正时直接改',
+        '「本次更新」面板：在应用内直接查看这一版改了什么',
+      ],
+    },
+    {
+      title: '彻底删除',
+      icon: '⌫',
+      items: [
+        '删除对话会同时擦除会话文件与索引、派生长期记忆、该会话产物图片与生成物',
+        '中止在途任务并加删除屏障，杜绝「删完又被写回复活」',
+        '兼容清理 0.0.3a 及更早版本散落在产物根目录的旧文件',
+        '清理报告如实展示已擦除数量与被占用未能删除的文件',
+        '新增「清空全部对话」，一次清干净',
+      ],
+    },
+    {
+      title: '修复',
+      icon: '✓',
+      items: [
+        '流式输出中断重试导致文本重复（增量计数恒为 0）',
+        '多步工具调用把中间轮过渡文本拼进最终答案',
+        'shell/python 超时后 Promise 永久挂起，Windows 下无法结束进程树',
+        '定时任务触发的 run 让输入框永久锁死；删除会话后残留孤儿 run 与授权请求',
+        '切换会话 / 点停止时状态不回滚；stop 可能误杀其它会话的全部任务',
+        'bootstrap 失败时永久卡在启动画面；并发发送造成跨会话内容串台',
+        'python 含空格路径被加引号导致 ENOENT；临时脚本无限累积',
+        'net.fetch 把 404 错误页当下载成功；fs.read 行范围倒挂；fs.delete 忽略 recursive 参数',
+      ],
+    },
+    {
+      title: '优化',
+      icon: '↗',
+      items: [
+        '工具循环按字符预算滚动裁剪上下文，避免多步调用把请求体撑爆',
+        '工具调用去重改用键排序的稳定序列化',
+        'cron 下次执行时间由逐分钟暴力搜索改为按字段跳进',
+        '定时任务 tick 加互斥、任务产物滚动清理、原子写复用带回退的实现',
+        '长期记忆归一化结果缓存、多来源合并后按来源删除更准确',
+        '思考过程折叠时停止定时器；流式 Markdown 解析改为节流',
+      ],
+    },
+  ],
+};

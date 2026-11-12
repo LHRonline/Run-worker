@@ -111,6 +111,7 @@ export function makeToolRuntime(
   ctx: MainContext,
   runId: string,
   notify: (level: 'info' | 'warn' | 'error', text: string) => void,
+  conversationId?: string,
 ): ToolRuntime {
   return {
     settings: () => ctx.settings(),
@@ -121,8 +122,9 @@ export function makeToolRuntime(
     mcp: ctx.mcp,
     log: ctx.log,
     workspace: () => ctx.workspace(),
-    // 产物落到工作目录下的隐藏文件夹，既方便用户找到，又不污染项目根
-    artifactsDir: path.join(ctx.workspace(), '.runworker-artifacts'),
+    // 产物落到工作目录下的隐藏文件夹，既方便用户找到，又不污染项目根；
+    // 按会话分目录，删除会话时可以连同产物一起彻底清掉。
+    artifactsDir: path.join(ctx.workspace(), '.runworker-artifacts', conversationId ?? '_shared'),
     async askApproval(req) {
       return ctx.approval.request({
         runId,

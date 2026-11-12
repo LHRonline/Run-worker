@@ -120,14 +120,20 @@ export const fsTools: ToolDefinition[] = [
       let text = fs.readFileSync(target, 'utf8');
       const truncated = text.length > MAX_READ_BYTES ? truncateMiddle(text, MAX_READ_BYTES) : text;
 
-      const startLine = Math.max(1, Math.round(num(args, 'startLine', 0)));
-      const endLine = Math.round(num(args, 'endLine', 0));
-      if (startLine > 1 || endLine > 0) {
-        const lines = text.split('\n');
-        const from = startLine > 0 ? startLine - 1 : 0;
-        const to = endLine > 0 ? Math.min(lines.length, endLine) : Math.min(lines.length, from + 800);
+      // 按参数是否传入决定是否走按行分支，避免只传 startLine:1 被忽略
+      const startGiven = args.startLine !== undefined && args.startLine !== null;
+      const endGiven = args.endLine !== undefined && args.endLine !== null;
+      if (startGiven || endGiven) {
+        const startLine = Math.max(1, Math.round(num(args, 'startLine', 1)));
+        const endLine = Math.round(num(args, 'endLine', 0));
+        // 基于已截断文本取行，并把起止行 clamp 到有效范围，避免越界时输出倒挂区间
+        const lines = truncated.split('\n');
+        const total = lines.length;
+        const from = Math.min(total - 1, Math.max(0, startLine - 1));
+        const wantedEnd = endGiven && endLine > 0 ? endLine : from + 800;
+        const to = Math.min(total, Math.max(from + 1, wantedEnd));
         const slice = lines.slice(from, to);
-        return ok(`${target}\n行 ${from + 1}-${to}（共 ${lines.length} 行）\n\n${slice.join('\n')}`);
+        return ok(`${target}\n行 ${from + 1}-${to}（共 ${total} 行）\n\n${slice.join('\n')}`);
       }
 
       if (text.length > 0 && text.length > MAX_READ_BYTES) {
@@ -186,15 +192,21 @@ export const fsTools: ToolDefinition[] = [
       if (!fs.existsSync(target)) return ok(`路径本来就不存在：${target}`);
       if (target === path.parse(target).root) return fail('拒绝对磁盘根目录执行删除。');
       const stat = fs.statSync(target);
+      const isDir = stat.isDirectory();
       const recursive = bool(args, 'recursive');
+      // 尊重 recursive 参数：目录且未显式指定递归时不擅自删除整个目录
+      if (isDir && !recursive) {
+        return fail('目标是目录且 recursive 为 false：未指定递归删除，请确认后显式传入 recursive:true 才会删除整个目录及其内容。');
+      }
+      const scope = isDir ? '目录及其全部内容（递归）' : '文件';
       const approved = await rt.askApproval({
         toolName: 'fs.delete',
-        command: `删除 ${stat.isDirectory() ? '目录' : '文件'}：${target}`,
+        command: `删除${scope}：${target}`,
         risk: 'high',
-        reason: '删除后无法恢复',
+        reason: isDir ? '将递归删除该目录及其全部内容，删除后无法恢复' : '删除后无法恢复',
       });
       if (!approved) return fail('用户拒绝了删除操作。');
-      fs.rmSync(target, { recursive: recursive || stat.isDirectory(), force: true });
+      fs.rmSync(target, { recursive, force: true });
       return ok(`已删除：${target}`);
     },
   },

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ApprovalRequest, ChatMessage, Conversation } from '@shared/types';
 import { AGENT_MAP } from '@shared/agents';
 import { api } from '../lib/bridge';
-import { formatClock, formatDuration, formatTokens } from '../lib/format';
+import { formatClock, formatDuration, formatTokensExact, usageSource } from '../lib/format';
 import type { RunInfo } from '../state/store';
 import { Markdown } from './Markdown';
 import { ThinkingPanel } from './ThinkingPanel';
@@ -18,6 +18,8 @@ export function Message({
   onRetry,
   allowRetry,
   collapseThinking = false,
+  showTokens = true,
+  onCorrect,
 }: {
   message: ChatMessage;
   conversation: Conversation;
@@ -27,8 +29,14 @@ export function Message({
   onRetry(): void;
   allowRetry: boolean;
   collapseThinking?: boolean;
+  /** 设置 → 思考过程 → 显示思考 token */
+  showTokens?: boolean;
+  /** 用户纠正这条回复，写入长期记忆 */
+  onCorrect?: (text: string) => void;
 }) {
   const [showCite, setShowCite] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
+  const [correction, setCorrection] = useState('');
   const citeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -71,6 +79,7 @@ export function Message({
   const duration = run ? (run.endedAt ? formatDuration(run.endedAt - run.startedAt) : streaming ? '' : '') : '';
   const pendingApproval = approvals.find((a) => a.runId === run?.runId);
   const conversationName = conversation.title;
+  const tokSource = usageSource(usage);
 
   return (
     <div className="msg assistant">
@@ -97,8 +106,11 @@ export function Message({
           {usage ? (
             <>
               <span className="sep" />
-              <span className="meta-dim">
-                {formatTokens(usage.totalTokens)} tok · ¥{usage.costCny.toFixed(4)}
+              <span className="meta-dim" title={tokSource.title}>
+                {formatTokensExact(usage.totalTokens)} tok · ¥{usage.costCny.toFixed(4)}
+                <span className={`tok-src${tokSource.estimated ? ' est' : ''}`} style={{ marginLeft: 5 }}>
+                  {tokSource.label}
+                </span>
               </span>
             </>
           ) : null}
@@ -133,25 +145,25 @@ export function Message({
             startedAt={run?.startedAt ?? message.createdAt}
             durationMs={run?.endedAt ? run.endedAt - run.startedAt : 0}
             langNote={run?.langNote}
-            showTokens
+            showTokens={showTokens}
             defaultCollapsed={collapseThinking}
           />
         ) : null}
 
-        {message.toolCalls?.map((call) => (
-          <ToolCard
-            key={call.id}
-            call={call}
-            approval={pendingApproval?.toolName === call.name ? pendingApproval : undefined}
-            onApprove={(approved, remember) => {
-              if (pendingApproval?.toolName === call.name) {
-                onApprove(pendingApproval.id, approved, remember);
-              } else {
-                onApprove(call.id, approved, remember);
-              }
-            }}
-          />
-        ))}
+        {message.toolCalls?.map((call) => {
+          const approval = pendingApproval?.toolName === call.name ? pendingApproval : undefined;
+          return (
+            <ToolCard
+              key={call.id}
+              call={call}
+              approval={approval}
+              onApprove={(approved, remember) => {
+                // 只用真实授权请求 id；没有匹配时绝不把 call.id 当 requestId 传出去
+                if (approval) onApprove(approval.id, approved, remember);
+              }}
+            />
+          );
+        })}
 
         {message.content ? <Markdown text={message.content} /> : null}
 
@@ -185,6 +197,60 @@ export function Message({
         {message.status === 'aborted' ? (
           <div className="msg-status-note">
             <span style={{ color: 'var(--warn)' }}>■</span>已停止生成，本轮内容保留在对话中
+          </div>
+        ) : null}
+
+        {onCorrect && !streaming ? (
+          <div className="correct-box">
+            {correcting ? (
+              <>
+                <textarea
+                  className="correct-input"
+                  value={correction}
+                  rows={2}
+                  autoFocus
+                  placeholder="以后该怎么做？例如：回答里不要写免责声明、表格用中文表头、先给命令再解释"
+                  onChange={(e) => setCorrection(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setCorrecting(false);
+                      setCorrection('');
+                    }
+                  }}
+                />
+                <div className="correct-actions">
+                  <button
+                    type="button"
+                    className="btn sm primary"
+                    disabled={!correction.trim()}
+                    onClick={() => {
+                      onCorrect(correction.trim());
+                      setCorrection('');
+                      setCorrecting(false);
+                    }}
+                  >
+                    记住并应用
+                  </button>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => {
+                      setCorrecting(false);
+                      setCorrection('');
+                    }}
+                  >
+                    取消
+                  </button>
+                </div>
+                <div className="correct-hint">
+                  会写入长期记忆，之后的回复优先遵守；彻底删除本对话时会一并清除。
+                </div>
+              </>
+            ) : (
+              <button type="button" className="correct-trigger" onClick={() => setCorrecting(true)}>
+                ✎ 纠正这条回复，让它以后别再犯
+              </button>
+            )}
           </div>
         ) : null}
 

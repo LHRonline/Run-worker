@@ -122,17 +122,17 @@ test('listModels：服务端异常时回退到预设模型列表', async () => {
 
 /* ------------------------ python 路径规范化 ------------------------ */
 
-test('python.exec：含空格的可执行路径会被引号包裹', () => {
+test('python.exec：含空格的可执行路径不再被引号包裹（0.0.3b 修复 ENOENT）', () => {
   const { safeExe } = require(path.join(DIST, 'main/tools/python.js'));
-  if (process.platform !== 'win32') return; // 引号逻辑仅在 Windows 生效
+  if (process.platform !== 'win32') return; // 路径处理仅在 Windows 单独校验
   assert.equal(safeExe('python'), 'python');
   assert.equal(safeExe('  python3  '), 'python3', '应 trim 前后空格');
   assert.equal(
     safeExe('C:\\Program Files\\Python39\\python.exe'),
-    '"C:\\Program Files\\Python39\\python.exe"',
-    '含空格路径应被引号包裹',
+    'C:\\Program Files\\Python39\\python.exe',
+    'spawn 未启用 shell，引号会被当成文件名字符，含空格路径必须原样返回',
   );
-  assert.equal(safeExe('"C:\\x y\\py.exe"'), '"C:\\x y\\py.exe"', '已带引号不应重复包裹');
+  assert.equal(safeExe('"C:\\x y\\py.exe"'), 'C:\\x y\\py.exe', '已有引号应剥掉，避免 ENOENT');
 });
 
 /* ------------------- 对话服务：异常必补 run:end ------------------- */

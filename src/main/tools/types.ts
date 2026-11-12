@@ -40,6 +40,8 @@ export interface ToolRuntime {
 export interface ToolContext {
   runId: string;
   agentId: AgentId;
+  /** 所属会话；用于把产物与记忆按会话隔离，删除会话时可一并清理 */
+  conversationId?: string;
   signal: AbortSignal;
   rt: ToolRuntime;
   emitRun(event: RunEvent): void;

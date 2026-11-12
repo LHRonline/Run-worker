@@ -23,11 +23,17 @@ export function ThinkingPanel({
   const bodyRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
+  // 设置里改「默认折叠」时，已渲染的面板也要跟着变化
   useEffect(() => {
-    if (!streaming) return;
+    setOpen(!defaultCollapsed);
+  }, [defaultCollapsed]);
+
+  // 折叠状态下不必每 200ms 重渲染一次
+  useEffect(() => {
+    if (!streaming || !open) return;
     const timer = setInterval(() => setNow(Date.now()), 200);
     return () => clearInterval(timer);
-  }, [streaming]);
+  }, [streaming, open]);
 
   /* 思考内容增长时始终跟随到底部，除非用户主动向上翻看 */
   useEffect(() => {
@@ -55,7 +61,7 @@ export function ThinkingPanel({
         <span className="thinking-live">
           {streaming ? <span className="pd" /> : null}
           {formatDuration(elapsed)}
-          {showTokens ? <span>· {formatTokens(tokens)} tok</span> : null}
+          {showTokens ? <span title="思考内容为本地字符估算，非服务商精确值">· 约 {formatTokens(tokens)} tok</span> : null}
         </span>
         <span className="right">
           <span style={{ fontSize: 10, color: 'var(--faint)' }}>{open ? '收起' : '展开'}</span>

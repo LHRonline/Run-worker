@@ -163,11 +163,15 @@ export interface LoopOptions {
   maxOutputTokens: number;
   toolsEnabled: boolean;
   toolOutputLimit: number;
+  /** 所属会话，用于按会话隔离产物与记忆 */
+  conversationId?: string;
   signal: AbortSignal;
   deps: LoopDeps;
   registry?: ToolRegistry;
   onDelta(text: string): void;
   onReasoning(text: string): void;
+  /** 进入第 2 轮及以后的工具循环时触发，界面据此清掉上一轮的过渡文本 */
+  onStepStart?(step: number): void;
 }
 
 export interface LoopResult {
@@ -189,12 +193,89 @@ function parseArgs(raw: string): Record<string, unknown> {
   }
 }
 
+/** 稳定序列化：对象按键排序，支持嵌套对象 / 数组。
+ *  JSON.stringify 对键顺序敏感，参数相同但键顺序不同会被误判为不同的工具调用。 */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+}
+
 /** OpenAI 兼容网关要求工具（function）名必须满足 ^[a-zA-Z0-9_-]+$，
  *  而本应用的工具名带点号（如 python.exec / net.fetch），直接发送会被服务端拒绝：
  *  「Invalid `tools[0].function.name`: string does not match pattern」。
  *  发送前把工具名规整为合法字符；模型回传后再映射回真实工具名。 */
 export function sanitizeToolName(name: string): string {
   return (name || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+/* --------------------------- 上下文预算裁剪 --------------------------- */
+
+/** 单条消息占用的字符数：content 长度 + tool_calls 的 id / 名 / 参数长度 */
+function messageChars(m: LlmMessage): number {
+  const content = m.content;
+  let n = typeof content === 'string' ? content.length : JSON.stringify(content ?? '').length;
+  if (m.tool_calls) {
+    for (const c of m.tool_calls) {
+      n += (c.id?.length ?? 0) + (c.function?.name?.length ?? 0) + (c.function?.arguments?.length ?? 0);
+    }
+  }
+  return n;
+}
+
+interface MessageGroup {
+  start: number;
+  end: number;
+  chars: number;
+  /** 含 system 或首条 user 的组不可删除 */
+  protectedGroup: boolean;
+}
+
+/** 把消息切成不可拆分的组：assistant(tool_calls) 与其后连续的 tool 消息同组。
+ *  这样裁剪时整组删 / 整组留，绝不会破坏配对（否则 API 会返回 400）。 */
+function groupMessages(messages: LlmMessage[], firstUserIdx: number): MessageGroup[] {
+  const groups: MessageGroup[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
+    const start = i;
+    let chars = messageChars(m);
+    let protectedGroup = m.role === 'system' || i === firstUserIdx;
+    i += 1;
+    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+      while (i < messages.length && messages[i].role === 'tool') {
+        chars += messageChars(messages[i]);
+        i += 1;
+      }
+    }
+    groups.push({ start, end: i - 1, chars, protectedGroup });
+  }
+  return groups;
+}
+
+/** 每轮结束后按总字符预算滚动裁剪较早的工具轮消息：
+ *  - 始终保留 system 消息与首条 user 消息；
+ *  - 以「工具轮整组」为单位删除，保持 assistant(tool_calls) 与 tool 消息的配对。 */
+function trimMessages(messages: LlmMessage[], budget: number): void {
+  let total = 0;
+  for (const m of messages) total += messageChars(m);
+  if (total <= budget) return;
+
+  const firstUserIdx = messages.findIndex((m) => m.role === 'user');
+  const remove = new Set<number>();
+  for (const g of groupMessages(messages, firstUserIdx)) {
+    if (total <= budget) break;
+    if (g.protectedGroup) continue;
+    for (let j = g.start; j <= g.end; j += 1) remove.add(j);
+    total -= g.chars;
+  }
+  if (remove.size === 0) return;
+  // 倒序删除，避免索引位移
+  for (let j = messages.length - 1; j >= 0; j -= 1) {
+    if (remove.has(j)) messages.splice(j, 1);
+  }
 }
 
 /** 以指定 Agent 身份跑工具循环，直到模型不再请求工具或步数耗尽 */
@@ -222,15 +303,21 @@ export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
   const collected: ToolCallRecord[] = [];
   const usages: RawUsage[] = [];
   const seen = new Map<string, number>();
-  let text = '';
-  let reasoning = '';
+  // 上下文字符预算：按工具输出上限推导，避免多步工具循环把 messages 线性撑爆触发 413
+  const charBudget = Math.max(24000, opts.toolOutputLimit * 8);
   let steps = 0;
-  let exhausted = false;
 
   while (steps < Math.max(1, opts.maxSteps)) {
     if (opts.signal.aborted) throw new Error('已取消本次生成。');
     steps += 1;
+    if (steps > 1) opts.onStepStart?.(steps);
 
+    // 每轮独立的文本 / 思考累加：最终落库只取「没有 toolCalls 的那一轮」。
+    // 中间轮的过渡文本仍实时推给 UI（回调发生在 streamChat 返回前，无法预知本轮
+    // 是否最终轮），但只推增量 d 一次，绝不二次推整段 res.text 或全局累加值，
+    // 因此不会重复推送同一段；中间轮文本也不会并入最终返回值。
+    let roundText = '';
+    let roundReasoning = '';
     const res = await streamChat({
       target: opts.target,
       messages,
@@ -241,18 +328,19 @@ export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
       signal: opts.signal,
       retries: 2,
       onDelta: (d) => {
-        text += d;
+        roundText += d;
         opts.onDelta(d);
       },
       onReasoning: (d) => {
-        reasoning += d;
+        roundReasoning += d;
         opts.onReasoning(d);
       },
     });
     usages.push(res.usage);
 
     if (res.toolCalls.length === 0) {
-      return { text, reasoning, toolCalls: collected, usages, steps, exhausted: false };
+      // 最终答复轮：返回值只包含本轮文本，与 push 给模型的 res.text / res.reasoning 一致
+      return { text: roundText, reasoning: roundReasoning, toolCalls: collected, usages, steps, exhausted: false };
     }
 
     // 模型本轮要调工具：先落一条 assistant 消息，再逐个执行
@@ -278,7 +366,7 @@ export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
         startedAt: Date.now(),
       };
 
-      const signature = `${realName}:${JSON.stringify(args)}`;
+      const signature = `${realName}:${stableStringify(args)}`;
       const hit = seen.get(signature) ?? 0;
       seen.set(signature, hit + 1);
 
@@ -315,6 +403,7 @@ export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
       const result = await registry.execute(realName, args, {
         runId: opts.deps.runId,
         agentId: opts.agent,
+        conversationId: opts.conversationId,
         signal: opts.signal,
         rt: opts.deps.rt,
         emitRun: opts.deps.emitRun,
@@ -341,14 +430,16 @@ export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
         content: truncateMiddle(result.content || (result.ok ? '（无输出）' : '工具失败'), opts.toolOutputLimit),
       });
     }
+    // 本轮工具消息已全部落库，按总字符预算滚动裁剪较早的工具轮
+    trimMessages(messages, charBudget);
   }
 
-  exhausted = true;
   opts.deps.emitRun({
     type: 'run:notice',
     runId: opts.deps.runId,
     level: 'warn',
     text: `已达到最大步数（${opts.maxSteps}），工具循环停止。可以继续追问，或调高「设置 → Agent → 最大步数」。`,
   });
-  return { text, reasoning, toolCalls: collected, usages, steps, exhausted };
+  // 步数耗尽：不存在「没有 toolCalls 的那一轮」，文本留空（已有 notice 提示用户）
+  return { text: '', reasoning: '', toolCalls: collected, usages, steps, exhausted: true };
 }

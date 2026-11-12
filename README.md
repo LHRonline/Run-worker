@@ -4,7 +4,7 @@
 
 **一个真正能动手的桌面 Agent：多智能体调度 + 直接操作你的电脑 + MCP 连接器 + 本地知识库，并把 token 花在刀刃上。**
 
-![version](https://img.shields.io/badge/version-0.0.3a-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4) ![electron](https://img.shields.io/badge/electron-33.4.11-47848f) ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
+![version](https://img.shields.io/badge/version-0.0.3b-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4) ![electron](https://img.shields.io/badge/electron-33.4.11-47848f) ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
 ---
 
@@ -13,7 +13,7 @@
 Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一句目标，它自己判断该由哪个子 Agent 接手、该调哪些工具，然后**真的去执行**——写文件、跑命令、出图、生成 3D 资产、剪辑视频、查你的本地资料库。
 它不绑定单一厂商：DeepSeek、OpenRouter 免费模型、Groq、硅基流动、Ollama 本地，任何兼容 OpenAI 协议的接口都能接。默认开启省 token 策略与中文思考流式展示，日常轻量任务可以做到零成本。
 
-> 当前版本 **0.0.3a**，MIT 协议开源。不知道从哪开始？直接看下面的 [3 分钟上手](#3-分钟上手)，或进 [docs/INSTALL.md](docs/INSTALL.md) 看完整安装教程。
+> 当前版本 **0.0.3b**，MIT 协议开源。不知道从哪开始？直接看下面的 [3 分钟上手](#3-分钟上手)，或进 [docs/INSTALL.md](docs/INSTALL.md) 看完整安装教程。
 
 ---
 
@@ -33,8 +33,12 @@ Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一�
 | DeepSeek 风格中文流式思考 | `reasoning_content` 实时流式展示，非中文占比超阈值自动重述 | `thinking.forceChinese` / `chineseRatioThreshold` |
 | 免费 API 开箱可用 | 内置 6 个渠道预设，免费模型标 `free: true`，可一键免费优先 | `freeMode`，`providers` |
 | 主题与个性化 | 深/浅/跟随系统，主题色、缩放、等宽字体、背景装饰 | `appearance` |
-| 云端更新检测 | GitHub Release 比对版本，提示下载 | `update.feed` / `update.channel` |
+| 应用内一键升级 | 检查新版 → 下载 → SHA-256 校验 → 静默安装，全程有进度 | 设置 → 更新，`update.feed` / `update.channel` |
 | 长期记忆与历史管理 | 偏好/事实/项目/指令四类记忆，会话置顶、搜索、导出 Markdown | `memory`，`conversations` |
+| 彻底删除对话 | 会话文件、索引、派生记忆、产物一并擦除，并中止在途任务 | 侧栏「彻底删除」/「清空全部」 |
+| Composer 增强菜单 | 添加文件、引用对话文件、模式、专家、技能、连接器一屏可达 | 输入框左侧「＋」 |
+| 精准 Token 计量 | 逐轮累加服务商 usage，精确值/本地估算分别标注，不做 k/M 缩写 | 输入框底部、消息、右侧轨迹栏 |
+| 自我改进与更像人 | 对回复提交「纠正」写入长期记忆并优先遵守；人设层更自然 | 回复下方「纠正这条回复」、`persona.humanize` |
 | 直给模式省 token | 不寒暄、不复述、先给结论，配合滚动摘要与工具输出截断 | `persona.noFiller` / `resultFirst` |
 
 ## 界面预览
@@ -52,7 +56,7 @@ Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一�
 
 ### 方式一：安装包（推荐）
 
-从 [Releases](https://github.com/LHRonline/run-worker/releases) 下载 `Run-worker-0.0.3a-setup.exe`，双击运行。安装器为 **NSIS 非一键式**：
+从 [Releases](https://github.com/LHRonline/run-worker/releases) 下载 `Run-worker-0.0.3b-setup.exe`，双击运行。安装器为 **NSIS 非一键式**：
 
 - 可选安装目录（默认在用户目录下，不强制 `Program Files`），创建桌面与开始菜单快捷方式（名称 `Run worker`）
 - 不申请管理员权限（`requestedExecutionLevel: asInvoker`），仅写 `HKCU` 注册表
@@ -250,7 +254,10 @@ OpenRouter 的 `:free` 模型有每分钟/每日请求上限；Groq 按天刷新
 不会主动上传。文件内容只在两种情况下离开本机：作为对话上下文发给**你自己配置的模型 API**，或你显式让 Agent 调用 `net.fetch`。知识库索引、记忆、日志全部存本地 `%APPDATA%/Run worker/`。匿名统计 `telemetry` 默认关闭。
 
 **更新怎么检测？**
-启动时按 `update.autoCheck` 后台检查，比对 `update.feed`（默认 `LHRonline/run-worker`）的 GitHub Release 版本号，有新版本在设置页提示并可跳转下载。当前为检测 + 手动下载安装，不做静默替换。
+启动时按 `update.autoCheck` 后台检查，比对 `update.feed`（默认 `LHRonline/run-worker`）的 GitHub Release 版本号。发现新版后侧栏会出现提示，进入「设置 → 更新」点「下载并安装」即可：应用会下载安装包、校验发布时提供的 SHA-256，通过后拉起静默安装器并退出自身完成覆盖。整个过程由你点击确认后才会开始，也可以继续用「打开下载页」手动升级。
+
+**删除对话后数据还在吗？**
+「彻底删除」会同时擦除会话文件与索引条目、该会话派生出的长期记忆（含你提交的纠正）、以及该会话产生的产物文件；正在执行的任务会先中止，避免删完又被写回。旧版本散落在产物根目录的文件也会一并清理。删除完成后界面会列出实际擦除的数量；若有文件被占用删不掉会明确提示。
 
 ## License
 
