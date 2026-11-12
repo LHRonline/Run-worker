@@ -975,7 +975,9 @@
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  /* 必须高于全屏遮罩层（.settings-overlay = 120），否则在设置页里打开
+     的弹窗（本次更新、确认框等）会被设置页盖住，只有关闭设置后才显示。 */
+  z-index: 130;
   display: grid;
   place-items: center;
   padding: 40px;
