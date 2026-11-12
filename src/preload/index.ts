@@ -17,6 +17,7 @@ import type {
   Settings,
   ToastPayload,
   UpdateInfo,
+  UpdateProgress,
 } from '../shared/types';
 import type { DeepPartial } from '../shared/ipc';
 
@@ -63,6 +64,7 @@ const api: RunWorkerApi = {
     clear: () => ipcRenderer.invoke(IPC.convClear),
     pin: (id: string, pinned: boolean) => ipcRenderer.invoke(IPC.convPin, { id, pinned }),
     exportMarkdown: (id: string) => ipcRenderer.invoke(IPC.convExport, id),
+    files: (id: string) => ipcRenderer.invoke(IPC.convFiles, id),
   },
   agents: {
     list: () => ipcRenderer.invoke(IPC.agentsList),
@@ -100,6 +102,7 @@ const api: RunWorkerApi = {
   update: {
     check: (force?: boolean) => ipcRenderer.invoke(IPC.updateCheck, force),
     open: () => ipcRenderer.invoke(IPC.updateOpen),
+    install: () => ipcRenderer.invoke(IPC.updateInstall),
   },
   events: {
     onRun: (cb) => on<RunEvent>(EVT.run, cb),
@@ -109,6 +112,7 @@ const api: RunWorkerApi = {
     onMcpChanged: (cb) => on(EVT.mcpChanged, cb),
     onKnowledgeChanged: (cb) => on<KnowledgeSource[]>(EVT.kbChanged, cb),
     onUpdateAvailable: (cb) => on<UpdateInfo>(EVT.updateAvailable, cb),
+    onUpdateProgress: (cb) => on<UpdateProgress>(EVT.updateProgress, cb),
     onSettingsChanged: (cb) => on<Settings>(EVT.settingsChanged, cb),
     onSystemTheme: (cb) => on<'dark' | 'light'>(EVT.systemTheme, cb),
   },

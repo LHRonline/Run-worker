@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { accentOf, darken, hexToRgba, lighten } from './lib/theme';
 import { useStore } from './state/store';
 import { TitleBar } from './components/TitleBar';
@@ -10,24 +10,24 @@ import { KnowledgePanel } from './components/KnowledgePanel';
 import { McpPanel } from './components/McpPanel';
 import { MemoryPanel } from './components/MemoryPanel';
 import { Onboarding } from './components/Onboarding';
+import { ReleaseNotes } from './components/ReleaseNotes';
 import { Settings } from './components/Settings';
 import { ToastStack } from './components/Toast';
 
 export default function App() {
   const { state, actions } = useStore();
-  const { settings, ready, view, systemTheme } = state;
-  const [systemDark, setSystemDark] = useState(systemTheme === 'dark');
+  const { settings, ready, view, systemTheme, bootError } = state;
 
-  /* 浏览器环境也监听系统主题；主进程事件由 store 同步 */
+  /* 浏览器环境监听系统主题；桌面端由主进程推送。两者都汇总到 store 的 systemTheme */
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = () => setSystemDark(mq.matches);
+    const handler = () => actions.setSystemTheme(mq.matches ? 'dark' : 'light');
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
-  }, []);
+  }, [actions]);
 
   const themeMode = settings.appearance.theme;
-  const resolved = themeMode === 'system' ? (systemDark ? 'dark' : 'light') : themeMode;
+  const resolved = themeMode === 'system' ? (systemTheme === 'dark' ? 'dark' : 'light') : themeMode;
 
   useEffect(() => {
     document.documentElement.dataset.theme = resolved;
@@ -68,18 +68,35 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [actions]);
 
-  if (!ready) {
+  if (!ready || bootError) {
     return (
-      <div className="boot">
-        <div className="boot-inner">
-          <img src="./icon.png" alt="Run worker" />
-          <div className="bt">Run worker</div>
-          <div className="bs">正在载入工作区与本地配置…</div>
-          <div className="boot-bar">
-            <i />
+      <>
+        <div className="boot">
+          <div className="boot-inner">
+            <img src="./icon.png" alt="Run worker" />
+            <div className="bt">Run worker</div>
+            {bootError ? (
+              <>
+                <div className="bs" style={{ color: 'var(--err)', maxWidth: 420, lineHeight: 1.7 }}>{bootError}</div>
+                <button
+                  type="button"
+                  className="btn primary"
+                  style={{ marginTop: 16 }}
+                  onClick={() => window.location.reload()}
+                >
+                  重新载入
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="bs">正在载入工作区与本地配置…</div>
+                <div className="boot-bar"><i /></div>
+              </>
+            )}
           </div>
         </div>
-      </div>
+        <ToastStack toasts={state.toasts} onDismiss={actions.dismissToast} />
+      </>
     );
   }
 
@@ -100,6 +117,7 @@ export default function App() {
 
       {!settings.onboardingDone ? <Onboarding /> : null}
       {state.settingsOpen ? <Settings /> : null}
+      {state.releaseNotesOpen ? <ReleaseNotes /> : null}
       <ToastStack toasts={state.toasts} onDismiss={actions.dismissToast} />
     </>
   );

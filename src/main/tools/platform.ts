@@ -68,7 +68,12 @@ export const platformTools: ToolDefinition[] = [
       const kindRaw = str(args, 'kind', 'fact');
       const kind = ['preference', 'fact', 'project', 'instruction'].includes(kindRaw) ? kindRaw : 'fact';
       const weight = Math.min(1, Math.max(0, num(args, 'weight', 0.6)));
-      const facts = rt.memory.add({ text, kind: kind as 'preference' | 'fact' | 'project' | 'instruction', weight, source: 'tool' });
+      const facts = rt.memory.add({
+        text,
+        kind: kind as 'preference' | 'fact' | 'project' | 'instruction',
+        weight,
+        source: tc.conversationId ? `tool:${tc.conversationId}` : 'tool',
+      });
       return ok(`已记住（当前共 ${facts.length} 条）：${text}`);
     },
   },

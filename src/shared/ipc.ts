@@ -11,6 +11,8 @@ import type {
   ChatSendRequest,
   Conversation,
   ConversationMeta,
+  ConversationFileRef,
+  ConversationPurgeReport,
   KnowledgeHit,
   KnowledgeSource,
   KnowledgeStats,
@@ -29,6 +31,7 @@ import type {
   TaskRun,
   ToastPayload,
   UpdateInfo,
+  UpdateProgress,
 } from './types';
 
 /** 主进程处理器：invoke/handle */
@@ -62,6 +65,8 @@ export const IPC = {
   convClear: 'conv:clear',
   convPin: 'conv:pin',
   convExport: 'conv:export',
+  /** 列出该会话可重新引用的文件（历史附件 + 产物） */
+  convFiles: 'conv:files',
 
   agentsList: 'agents:list',
 
@@ -93,6 +98,8 @@ export const IPC = {
 
   updateCheck: 'update:check',
   updateOpen: 'update:open',
+  /** 应用内下载 + SHA-256 校验 + 拉起静默安装 */
+  updateInstall: 'update:install',
 } as const;
 
 /** 主进程 → 渲染进程 主动推送 */
@@ -104,6 +111,7 @@ export const EVT = {
   mcpChanged: 'evt:mcp-changed',
   kbChanged: 'evt:kb-changed',
   updateAvailable: 'evt:update-available',
+  updateProgress: 'evt:update-progress',
   settingsChanged: 'evt:settings-changed',
   systemTheme: 'evt:system-theme',
 } as const;
@@ -140,10 +148,13 @@ export interface RunWorkerApi {
     get(id: string): Promise<Conversation | null>;
     create(title?: string): Promise<Conversation>;
     rename(id: string, title: string): Promise<void>;
-    remove(id: string): Promise<void>;
-    clear(): Promise<void>;
+    /** 彻底删除：会话文件 + 索引 + 派生记忆 + 产物，返回擦除报告 */
+    remove(id: string): Promise<ConversationPurgeReport>;
+    clear(): Promise<ConversationPurgeReport>;
     pin(id: string, pinned: boolean): Promise<void>;
     exportMarkdown(id: string): Promise<string>;
+    /** 该会话的附件与产物，供输入框「引用对话文件」使用 */
+    files(id: string): Promise<ConversationFileRef[]>;
   };
   agents: {
     list(): Promise<AgentDescriptor[]>;
@@ -181,6 +192,8 @@ export interface RunWorkerApi {
   update: {
     check(force?: boolean): Promise<UpdateInfo>;
     open(): Promise<void>;
+    /** 下载并校验安装包，然后拉起静默安装；进度通过 onUpdateProgress 推送 */
+    install(): Promise<UpdateProgress>;
   };
   events: {
     onRun(cb: (e: RunEvent) => void): () => void;
@@ -190,6 +203,7 @@ export interface RunWorkerApi {
     onMcpChanged(cb: (servers: McpServerStatus[]) => void): () => void;
     onKnowledgeChanged(cb: (sources: KnowledgeSource[]) => void): () => void;
     onUpdateAvailable(cb: (info: UpdateInfo) => void): () => void;
+    onUpdateProgress(cb: (p: UpdateProgress) => void): () => void;
     onSettingsChanged(cb: (s: Settings) => void): () => void;
     onSystemTheme(cb: (mode: 'dark' | 'light') => void): () => void;
   };

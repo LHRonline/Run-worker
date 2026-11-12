@@ -35,6 +35,7 @@ export function runProcess(opts: RunProcessOptions): Promise<ProcResult> {
     let timedOut = false;
     let aborted = false;
     let settled = false;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
 
     const child = spawn(opts.command, opts.args, {
       cwd: opts.cwd,
@@ -47,26 +48,47 @@ export function runProcess(opts: RunProcessOptions): Promise<ProcResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
       resolve({ exitCode, stdout, stderr, timedOut, aborted, spawnError });
     };
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    /** 终止整棵进程树：Windows 下 child.kill 常杀不掉 shell 及其孙进程，用 taskkill 兜底 */
+    const killTree = () => {
       try {
         child.kill();
       } catch {
         /* 已退出 */
       }
+      if (process.platform === 'win32' && child.pid) {
+        try {
+          const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+            windowsHide: true,
+            stdio: 'ignore',
+          });
+          killer.on('error', () => {
+            /* taskkill 不可用时静默降级，不能抛 */
+          });
+        } catch {
+          /* 静默降级，不能抛 */
+        }
+      }
+    };
+
+    /** kill 后 close 可能永远不来，2 秒后强制结束 Promise，防止整个 run 永久挂起 */
+    const terminate = () => {
+      killTree();
+      if (!forceTimer) forceTimer = setTimeout(() => finish(null), 2000);
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminate();
     }, Math.max(1000, opts.timeoutMs));
 
     const onAbort = () => {
       aborted = true;
-      try {
-        child.kill();
-      } catch {
-        /* 已退出 */
-      }
+      terminate();
     };
     if (opts.signal) {
       if (opts.signal.aborted) onAbort();

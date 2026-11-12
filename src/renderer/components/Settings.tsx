@@ -65,7 +65,13 @@ export function Settings() {
   const [tests, setTests] = useState<Record<string, ProviderTestResult>>({});
   const [modelsLoading, setModelsLoading] = useState<string | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState(state.updateInfo);
+  // 直接用 store 里的更新信息：后台自动检查 / 事件推送的结果会实时反映到界面
+  const updateInfo = state.updateInfo;
+  const updateProgress = state.updateProgress;
+  const installBusy =
+    updateProgress?.stage === 'downloading' ||
+    updateProgress?.stage === 'verifying' ||
+    updateProgress?.stage === 'installing';
   const [bootAutoStart, setBootAutoStart] = useState(false);
   const [denyText, setDenyText] = useState(draft.agent.denyPatterns.join('\n'));
 
@@ -977,7 +983,17 @@ export function Settings() {
                       <div className="ua">
                         {updateInfo.available ? (
                           <>
-                            <button type="button" className="btn primary" onClick={() => void api.update.open()}>
+                            <button
+                              type="button"
+                              className="btn primary"
+                              disabled={installBusy}
+                              onClick={() => void actions.installUpdate()}
+                              title="下载安装包、校验 SHA-256，然后拉起静默安装并退出应用"
+                            >
+                              {installBusy ? <span className="spin" /> : null}
+                              下载并安装 v{updateInfo.latestVersion}
+                            </button>
+                            <button type="button" className="btn" onClick={() => void api.update.open()}>
                               打开下载页
                             </button>
                             {updateInfo.releaseUrl ? (
@@ -995,9 +1011,34 @@ export function Settings() {
                     </>
                   ) : (
                     <div className="field-hint" style={{ marginTop: 8 }}>
-                      点击「检查更新」从更新源获取最新版本信息。更新只下载安装包，不会静默替换程序。
+                      点击「检查更新」获取最新版本信息。发现新版后可在应用内下载、校验并一键安装，安装由你点击确认后才会执行。
                     </div>
                   )}
+
+                  {updateProgress && updateProgress.stage !== 'idle' ? (
+                    <div className="update-progress">
+                      <div className="up-row">
+                        <span style={{ color: updateProgress.stage === 'error' ? 'var(--err)' : 'var(--text-2)' }}>
+                          {updateProgress.text}
+                        </span>
+                        {updateProgress.stage === 'downloading' && updateProgress.percent >= 0 ? (
+                          <span className="mono-text">{updateProgress.percent}%</span>
+                        ) : null}
+                      </div>
+                      <div className="up-track">
+                        <i
+                          className={updateProgress.stage === 'error' ? 'err' : ''}
+                          style={{ width: `${Math.max(3, Math.min(100, Math.max(0, updateProgress.percent)))}%` }}
+                        />
+                      </div>
+                      {updateProgress.localPath ? (
+                        <div className="field-hint mono-text" style={{ wordBreak: 'break-all' }}>
+                          安装包：{updateProgress.localPath}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   <div className="ua">
                     <button
                       type="button"
@@ -1005,13 +1046,16 @@ export function Settings() {
                       disabled={updateChecking}
                       onClick={async () => {
                         setUpdateChecking(true);
-                        const info = await actions.checkUpdate(true);
-                        setUpdateInfo(info);
+                        // checkUpdate 自己会更新 store；检查失败也不要清空已有的版本信息
+                        await actions.checkUpdate(true);
                         setUpdateChecking(false);
                       }}
                     >
                       {updateChecking ? <span className="spin" /> : null}
                       {updateChecking ? '检查中…' : '检查更新'}
+                    </button>
+                    <button type="button" className="btn" onClick={() => actions.setReleaseNotesOpen(true)}>
+                      查看本次更新内容
                     </button>
                   </div>
                 </div>
@@ -1146,6 +1190,6 @@ const GROUP_DESC: Record<GroupId, string> = {
   kb: '本地知识库索引概况。添加来源、重建索引与检索测试在知识库面板中完成。',
   memory: '跨对话长期记忆的开关与容量。权重越高越容易被召回。',
   appearance: '主题、主题色、缩放与阅读偏好。浅色主题下所有面板同样保持高对比度。',
-  update: '检查新版本与更新通道。更新不会静默安装，需要你手动确认。',
+  update: '检查新版本、下载并校验安装包，在应用内完成升级。安装由你点击确认后才会执行。',
   about: '版本、运行环境、开源协议与环境变量状态。',
 };

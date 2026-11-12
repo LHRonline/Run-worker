@@ -30,6 +30,7 @@ import type {
   TaskRun,
   ToastPayload,
   UpdateInfo,
+  UpdateProgress,
   UsageStats,
 } from '@shared/types';
 import { createDefaultSettings } from '@shared/presets';
@@ -80,6 +81,12 @@ export interface AppState {
   mcp: McpServerStatus[];
   mcpTools: McpToolInfo[];
   updateInfo: UpdateInfo | null;
+  /** 应用内一键升级进度 */
+  updateProgress: UpdateProgress | null;
+  /** 启动失败原因（空表示正常） */
+  bootError: string | null;
+  /** 「本次更新」面板 */
+  releaseNotesOpen: boolean;
   toasts: ToastItem[];
   settingsOpen: boolean;
   query: string;
@@ -107,6 +114,9 @@ const initialState: AppState = {
   mcp: [],
   mcpTools: [],
   updateInfo: null,
+  updateProgress: null,
+  bootError: null,
+  releaseNotesOpen: false,
   toasts: [],
   settingsOpen: false,
   query: '',
@@ -116,6 +126,7 @@ const initialState: AppState = {
 
 type Action =
   | { type: 'BOOTSTRAP'; payload: Awaited<ReturnType<typeof api.bootstrap>>; ui: UiState; systemTheme: 'dark' | 'light' }
+  | { type: 'BOOTSTRAP_ERROR'; message: string }
   | { type: 'SET_SETTINGS'; settings: Settings }
   | { type: 'SET_VIEW'; view: View }
   | { type: 'SET_UI'; patch: Partial<UiState> }
@@ -125,6 +136,7 @@ type Action =
   | { type: 'UPSERT_CONV'; conversation: Conversation }
   | { type: 'PATCH_CONV'; id: string; patch: Partial<Conversation> }
   | { type: 'REMOVE_CONV'; id: string }
+  | { type: 'CLEAR_CONVS' }
   | { type: 'SET_METAS'; metas: ConversationMeta[]; conversations?: Record<string, Conversation> }
   | { type: 'ADD_MESSAGE'; convId: string; message: ChatMessage }
   | { type: 'PATCH_MESSAGE'; convId: string; messageId: string; patch: Partial<ChatMessage> }
@@ -140,6 +152,8 @@ type Action =
   | { type: 'SET_MCP'; servers: McpServerStatus[] }
   | { type: 'SET_MCP_TOOLS'; tools: McpToolInfo[] }
   | { type: 'SET_UPDATE'; info: UpdateInfo | null }
+  | { type: 'SET_UPDATE_PROGRESS'; progress: UpdateProgress | null }
+  | { type: 'SET_RELEASE_NOTES_OPEN'; open: boolean }
   | { type: 'TOAST_ADD'; toast: ToastItem }
   | { type: 'TOAST_REMOVE'; id: string }
   | { type: 'SET_SETTINGS_OPEN'; open: boolean }
@@ -177,42 +191,33 @@ function syncMeta(metas: ConversationMeta[], conv: Conversation): ConversationMe
 function resolveRun(state: AppState, runId: string, conversationId?: string): { info?: RunInfo; convId?: string; messageId?: string } {
   const info = state.runs[runId];
   if (info) return { info, convId: info.conversationId, messageId: info.messageId };
-  const ids = conversationId ? [conversationId] : Object.keys(state.conversations);
-  for (const id of ids) {
-    const conv = state.conversations[id];
+  // SET_RUN 可能晚于首批 SSE 事件到达，此时才回退到 streaming 占位消息。
+  // 必须全局唯一才认，否则两条并发 run 的内容会串到同一条消息上。
+  const candidates: Array<{ convId: string; messageId: string }> = [];
+  for (const [id, conv] of Object.entries(state.conversations)) {
+    if (conversationId && id !== conversationId) continue;
     if (!conv) continue;
     const streaming = [...conv.messages].reverse().find((m) => m.role === 'assistant' && m.status === 'streaming');
-    if (streaming) return { convId: id, messageId: streaming.id };
+    if (streaming) candidates.push({ convId: id, messageId: streaming.id });
   }
-  return {};
+  return candidates.length === 1 ? candidates[0] : {};
 }
 
 function applyRunEvent(state: AppState, e: RunEvent): AppState {
   if (e.type === 'run:notice') {
+    const kind: ToastItem['kind'] = e.level === 'warn' ? 'warn' : e.level;
     return {
       ...state,
-      toasts: [...state.toasts, { id: uid('toast'), kind: e.level === 'warn' ? 'warn' : e.level, text: e.text }],
+      toasts: [...state.toasts, { id: uid('toast'), kind, text: e.text }].slice(-4),
     };
   }
   if (e.type === 'run:start') {
     const found = resolveRun(state, e.runId, e.conversationId);
     const conv = state.conversations[e.conversationId];
     if (!conv || !found.messageId) {
-      return {
-        ...state,
-        runs: {
-          ...state.runs,
-          [e.runId]: {
-            runId: e.runId,
-            conversationId: e.conversationId,
-            messageId: '',
-            startedAt: e.at,
-            agentId: e.agentId,
-            model: e.model,
-            status: 'running',
-          },
-        },
-      };
+      // 定时任务/后台 run 的目标会话尚未加载：不要写 messageId:'' 的孤儿 run，
+      // 否则后续事件全被守卫丢弃，界面会永久卡在「执行中」。用户点开该会话时会读到落库正文。
+      return state;
     }
     const nextConv = withMessage(conv, found.messageId, (m) => ({
       ...m,
@@ -243,6 +248,10 @@ function applyRunEvent(state: AppState, e: RunEvent): AppState {
   }
 
   const found = resolveRun(state, e.runId);
+  if (e.type === 'run:end' && (!found.convId || !found.messageId || !state.conversations[found.convId])) {
+    // 即使找不到占位消息，也要把该 run 残留的授权请求清掉
+    return { ...state, approvals: state.approvals.filter((a) => a.runId !== e.runId) };
+  }
   if (!found.convId || !found.messageId) return state;
   const conv = state.conversations[found.convId];
   if (!conv) return state;
@@ -308,15 +317,20 @@ function applyRunEvent(state: AppState, e: RunEvent): AppState {
       nextConv = { ...nextConv, usage: e.conversationUsage };
       break;
     }
+    case 'run:step': {
+      // 多步工具调用进入下一轮：清掉上一轮的过渡文本，避免界面把中间轮和最终答案拼在一起
+      nextConv = withMessage(conv, found.messageId, (m) => ({ ...m, content: '', thinking: '' }));
+      break;
+    }
     case 'run:end': {
       const status: ChatMessage['status'] = e.status === 'done' ? 'done' : e.status === 'error' ? 'error' : 'aborted';
+      // 保持本地消息 id 不变：替换 id 会让整棵子树按新 key 重挂载，用户展开的参数/思考面板会突然收起
       nextConv = withMessage(conv, found.messageId, (m) => ({
         ...m,
-        id: e.messageId ?? m.id,
         status,
         error: e.error ?? m.error,
       }));
-      runs = patchRun({ status: e.status, messageId: e.messageId ?? found.messageId, endedAt: Date.now() });
+      runs = patchRun({ status: e.status, endedAt: Date.now() });
       break;
     }
     default:
@@ -356,6 +370,8 @@ function reducer(state: AppState, action: Action): AppState {
         systemTheme: action.systemTheme,
       };
     }
+    case 'BOOTSTRAP_ERROR':
+      return { ...state, ready: true, bootError: action.message };
     case 'SET_SETTINGS':
       return { ...state, settings: action.settings };
     case 'SET_VIEW':
@@ -399,13 +415,30 @@ function reducer(state: AppState, action: Action): AppState {
     case 'REMOVE_CONV': {
       const conversations = { ...state.conversations };
       delete conversations[action.id];
+      // 连同该会话的在途 run 与授权请求一起清掉，避免留下永久 running 的孤儿
+      const runIds = Object.values(state.runs)
+        .filter((r) => r.conversationId === action.id)
+        .map((r) => r.runId);
+      const runs = { ...state.runs };
+      for (const id of runIds) delete runs[id];
       return {
         ...state,
         conversations,
         metas: state.metas.filter((m) => m.id !== action.id),
         activeId: state.activeId === action.id ? null : state.activeId,
+        runs,
+        approvals: state.approvals.filter((a) => !runIds.includes(a.runId)),
       };
     }
+    case 'CLEAR_CONVS':
+      return {
+        ...state,
+        conversations: {},
+        metas: [],
+        activeId: null,
+        runs: {},
+        approvals: [],
+      };
     case 'SET_METAS': {
       const conversations = { ...state.conversations };
       for (const meta of action.metas) {
@@ -467,6 +500,10 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, mcpTools: action.tools };
     case 'SET_UPDATE':
       return { ...state, updateInfo: action.info };
+    case 'SET_UPDATE_PROGRESS':
+      return { ...state, updateProgress: action.progress };
+    case 'SET_RELEASE_NOTES_OPEN':
+      return { ...state, releaseNotesOpen: action.open };
     case 'TOAST_ADD':
       return { ...state, toasts: [...state.toasts.slice(-3), action.toast] };
     case 'TOAST_REMOVE':
@@ -489,6 +526,10 @@ export interface StoreActions {
   renameConversation(id: string, title: string): Promise<void>;
   togglePin(id: string): Promise<void>;
   removeConversation(id: string): Promise<void>;
+  /** 清空全部对话（含文件、索引、记忆、产物） */
+  clearConversations(): Promise<void>;
+  /** 用户纠正某条回复 → 写入长期记忆，后续提示词自动生效 */
+  correctMessage(text: string, conversationId: string): Promise<void>;
   send(text: string, agentId: AgentId, attachments: Attachment[]): Promise<void>;
   stop(): Promise<void>;
   approve(requestId: string, approved: boolean, remember: boolean): void;
@@ -497,6 +538,7 @@ export interface StoreActions {
   openSettings(open: boolean): void;
   setUi(patch: Partial<UiState>): void;
   setQuery(q: string): void;
+  setSystemTheme(theme: 'dark' | 'light'): void;
   toast(kind: ToastPayload['kind'], text: string): void;
   dismissToast(id: string): void;
   refreshTasks(): Promise<void>;
@@ -517,6 +559,9 @@ export interface StoreActions {
   connectMcp(id: string): Promise<void>;
   refreshMcp(): Promise<void>;
   checkUpdate(force: boolean): Promise<UpdateInfo | null>;
+  /** 应用内一键升级 */
+  installUpdate(): Promise<void>;
+  setReleaseNotesOpen(open: boolean): void;
   saveSettingsDraft(next: Settings): Promise<void>;
 }
 
@@ -562,10 +607,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
       .catch((err: unknown) => {
         if (!alive) return;
-        dispatch({
-          type: 'TOAST_ADD',
-          toast: { id: uid('toast'), kind: 'error', text: `初始化失败：${err instanceof Error ? err.message : String(err)}` },
-        });
+        const message = `初始化失败：${err instanceof Error ? err.message : String(err)}`;
+        // ready 必须置 true，否则应用会永久停在启动画面且错误 toast 根本不渲染
+        dispatch({ type: 'BOOTSTRAP_ERROR', message });
+        dispatch({ type: 'TOAST_ADD', toast: { id: uid('toast'), kind: 'error', text: message } });
       });
     return () => {
       alive = false;
@@ -578,6 +623,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       api.events.onRun((event) => {
         dispatch({ type: 'RUN_EVENT', event });
         if (event.type === 'run:end') {
+          // 定时任务/后台 run 的消息落在主进程，已打开的会话要重新读一次正文
+          const convId = stateRef.current.runs[event.runId]?.conversationId;
+          if (convId && stateRef.current.conversations[convId]) {
+            api.conversations
+              .get(convId)
+              .then((conv) => {
+                if (conv) dispatch({ type: 'LOAD_CONV', conversation: conv });
+              })
+              .catch(() => undefined);
+          }
           api.conversations
             .list()
             .then((metas) => dispatch({ type: 'SET_METAS', metas }))
@@ -597,6 +652,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }),
       api.events.onKnowledgeChanged((sources) => dispatch({ type: 'SET_KB', sources })),
       api.events.onUpdateAvailable((info) => dispatch({ type: 'SET_UPDATE', info })),
+      api.events.onUpdateProgress((progress) => {
+        dispatch({ type: 'SET_UPDATE_PROGRESS', progress });
+        if (progress.stage === 'error' || progress.stage === 'installing' || progress.stage === 'done') {
+          dispatch({
+            type: 'TOAST_ADD',
+            toast: { id: uid('toast'), kind: progress.stage === 'error' ? 'error' : 'info', text: progress.text },
+          });
+        }
+      }),
       api.events.onSettingsChanged((settings) => dispatch({ type: 'SET_SETTINGS', settings })),
       api.events.onSystemTheme((mode) => {
         dispatch({ type: 'SET_SYSTEM_THEME', theme: mode });
@@ -623,7 +687,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setView: (view) => dispatch({ type: 'SET_VIEW', view }),
       setUi: (patch) => dispatch({ type: 'SET_UI', patch }),
       setQuery: (query) => dispatch({ type: 'SET_QUERY', query }),
+      setSystemTheme: (theme) => dispatch({ type: 'SET_SYSTEM_THEME', theme }),
       openSettings: (open) => dispatch({ type: 'SET_SETTINGS_OPEN', open }),
+      setReleaseNotesOpen: (open) => dispatch({ type: 'SET_RELEASE_NOTES_OPEN', open }),
       toast,
       dismissToast: (id) => dispatch({ type: 'TOAST_REMOVE', id }),
 
@@ -631,7 +697,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const prev = stateRef.current;
         if (prev.activeId && prev.activeId !== id) {
           const running = Object.values(prev.runs).find((r) => r.status === 'running' && r.conversationId === prev.activeId);
-          if (running) api.chat.abort(running.runId).catch(() => {});
+          if (running) {
+            api.chat.abort(running.runId).catch(() => {});
+            // 乐观回滚：主进程的 run:end 可能延迟或丢失，不能让输入框一直锁在「停止」
+            dispatch({ type: 'END_RUN', runId: running.runId, status: 'aborted' });
+            if (running.messageId) {
+              dispatch({
+                type: 'PATCH_MESSAGE',
+                convId: running.conversationId,
+                messageId: running.messageId,
+                patch: { status: 'aborted' },
+              });
+            }
+          }
         }
         dispatch({ type: 'SET_ACTIVE', id });
         if (stateRef.current.conversations[id]) return;
@@ -681,15 +759,75 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
 
       removeConversation: async (id) => {
-        await api.conversations.remove(id);
-        dispatch({ type: 'REMOVE_CONV', id });
-        toast('success', '对话已删除');
+        try {
+          // 先停掉在途 run，避免删除后还有事件涌向已不存在的会话
+          const running = Object.values(stateRef.current.runs).filter(
+            (r) => r.status === 'running' && r.conversationId === id,
+          );
+          for (const r of running) api.chat.abort(r.runId).catch(() => {});
+          const report = await api.conversations.remove(id);
+          dispatch({ type: 'REMOVE_CONV', id });
+          const parts: string[] = [];
+          if (report?.files) parts.push(`${report.files} 个会话文件`);
+          if (report?.artifacts) parts.push(`${report.artifacts} 个产物文件`);
+          if (report?.memories) parts.push(`${report.memories} 条派生记忆`);
+          if (report?.runs) parts.push(`${report.runs} 个在途任务`);
+          const detail = parts.length ? `（已擦除 ${parts.join('、')}）` : '';
+          toast('success', `对话已彻底删除${detail}`);
+          if (report?.failed?.length) {
+            toast('warn', `有 ${report.failed.length} 个文件被占用未能删除，请关闭相关程序后重试。`);
+          }
+        } catch (err) {
+          toast('error', `删除失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+
+      clearConversations: async () => {
+        try {
+          const report = await api.conversations.clear();
+          dispatch({ type: 'CLEAR_CONVS' });
+          const parts: string[] = [];
+          if (report?.files) parts.push(`${report.files} 个会话文件`);
+          if (report?.artifacts) parts.push(`${report.artifacts} 个产物文件`);
+          if (report?.memories) parts.push(`${report.memories} 条派生记忆`);
+          if (report?.runs) parts.push(`${report.runs} 个在途任务`);
+          toast('success', `全部对话已彻底清空${parts.length ? `（${parts.join('、')}）` : ''}`);
+          if (report?.failed?.length) {
+            toast('warn', `有 ${report.failed.length} 个文件被占用未能删除，请关闭相关程序后重试。`);
+          }
+        } catch (err) {
+          toast('error', `清空失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+
+      correctMessage: async (text, conversationId) => {
+        const clean = text.trim();
+        if (!clean) return;
+        try {
+          // 纠正写成「要求」类强指令，并在系统提示里获得最高优先级；
+          // 带会话来源，彻底删除该对话时会一并清掉。
+          const facts = await api.memory.add({
+            text: clean,
+            kind: 'instruction',
+            weight: 0.9,
+            source: `feedback:${conversationId}`,
+          });
+          dispatch({ type: 'SET_MEMORY', facts });
+          toast('success', '已记住这条纠正，之后的回复会按它执行');
+        } catch (err) {
+          toast('error', `保存纠正失败：${err instanceof Error ? err.message : String(err)}`);
+        }
       },
 
       send: async (text, agentId, attachments) => {
         const clean = text.trim();
         if (!clean) return;
         const snapshot = stateRef.current;
+        // store 层统一守卫：Composer 的组件级 running 挡不住建议卡/重试等入口的连点
+        if (Object.values(snapshot.runs).some((r) => r.status === 'running' && r.conversationId === snapshot.activeId)) {
+          toast('warn', '当前对话正在执行，请等待完成或点击停止');
+          return;
+        }
         let convId = snapshot.activeId;
         if (!convId || !snapshot.conversations[convId]) {
           try {
@@ -761,10 +899,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       stop: async () => {
         const snapshot = stateRef.current;
         const run = Object.values(snapshot.runs).find((r) => r.status === 'running' && r.conversationId === snapshot.activeId);
+        // 找不到本会话的 run 时绝不调用 abort(undefined)：主进程会把它当成「中止全部任务」
+        if (!run) return;
+        dispatch({ type: 'END_RUN', runId: run.runId, status: 'aborted' });
+        if (run.messageId) {
+          dispatch({
+            type: 'PATCH_MESSAGE',
+            convId: run.conversationId,
+            messageId: run.messageId,
+            patch: { status: 'aborted' },
+          });
+        }
         try {
-          await api.chat.abort(run?.runId);
+          await api.chat.abort(run.runId);
         } catch {
-          toast('warn', '停止请求未送达，界面已停止接收输出');
+          toast('warn', '停止请求未送达，界面已先停止接收输出');
         }
       },
 
@@ -911,6 +1060,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch (err) {
           toast('error', `检查更新失败：${err instanceof Error ? err.message : String(err)}`);
           return null;
+        }
+      },
+
+      installUpdate: async () => {
+        dispatch({
+          type: 'SET_UPDATE_PROGRESS',
+          progress: { stage: 'downloading', percent: 0, text: '正在准备下载安装包…' },
+        });
+        try {
+          const progress = await api.update.install();
+          dispatch({ type: 'SET_UPDATE_PROGRESS', progress });
+          if (progress.stage === 'error') toast('error', progress.text);
+        } catch (err) {
+          const message = `升级失败：${err instanceof Error ? err.message : String(err)}`;
+          dispatch({
+            type: 'SET_UPDATE_PROGRESS',
+            progress: { stage: 'error', percent: 0, text: message, error: message },
+          });
+          toast('error', message);
         }
       },
     };

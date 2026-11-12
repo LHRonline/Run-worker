@@ -16,6 +16,8 @@ import type {
   Citation,
   Conversation,
   ConversationMeta,
+  ConversationFileRef,
+  ConversationPurgeReport,
   KnowledgeHit,
   KnowledgeSource,
   KnowledgeStats,
@@ -33,6 +35,7 @@ import type {
   TaskRun,
   ToastPayload,
   UpdateInfo,
+  UpdateProgress,
   UsageStats,
 } from '@shared/types';
 import { DEFAULT_USAGE } from '@shared/types';
@@ -222,6 +225,9 @@ function usageOf(prompt: string, completion: string): UsageStats {
     cachedTokens: Math.round(p * 0.3),
     totalTokens: p + c,
     costCny: Number(((p + c) * 0.0000012).toFixed(5)),
+    tokenSource: 'estimated',
+    exactRequests: 0,
+    totalRequests: 1,
   };
 }
 
@@ -495,6 +501,7 @@ class MockApi implements RunWorkerApi {
   private mcpListeners: Listener<McpServerStatus[]>[] = [];
   private kbListeners: Listener<KnowledgeSource[]>[] = [];
   private updateListeners: Listener<UpdateInfo>[] = [];
+  private updateProgressListeners: Listener<UpdateProgress>[] = [];
   private settingsListeners: Listener<Settings>[] = [];
   private themeListeners: Listener<'dark' | 'light'>[] = [];
   private aborted = new Set<string>();
@@ -706,13 +713,27 @@ class MockApi implements RunWorkerApi {
       if (c) c.title = title.trim() || c.title;
       this.save();
     },
-    remove: async (id: string): Promise<void> => {
+    remove: async (id: string): Promise<ConversationPurgeReport> => {
+      const before = this.data.conversations.length;
+      const beforeMem = this.data.memory.length;
       this.data.conversations = this.data.conversations.filter((c) => c.id !== id);
+      this.data.memory = this.data.memory.filter((f) => !(f.source ?? '').includes(id));
       this.save();
+      return {
+        files: Math.max(0, before - this.data.conversations.length),
+        artifacts: 0,
+        memories: beforeMem - this.data.memory.length,
+        runs: 0,
+        failed: [],
+      };
     },
-    clear: async (): Promise<void> => {
+    clear: async (): Promise<ConversationPurgeReport> => {
+      const files = this.data.conversations.length;
+      const beforeMem = this.data.memory.length;
       this.data.conversations = [];
+      this.data.memory = this.data.memory.filter((f) => !/^(auto|tool|feedback)(:|$)/.test(f.source ?? ''));
       this.save();
+      return { files, artifacts: 0, memories: beforeMem - this.data.memory.length, runs: 0, failed: [] };
     },
     pin: async (id: string, pinned: boolean): Promise<void> => {
       const c = this.data.conversations.find((x) => x.id === id);
@@ -725,6 +746,20 @@ class MockApi implements RunWorkerApi {
       return c.messages
         .map((m) => `## ${m.role === 'user' ? '我' : 'Run worker'}\n\n${m.content}`)
         .join('\n\n');
+    },
+    files: async (id: string): Promise<ConversationFileRef[]> => {
+      const c = this.data.conversations.find((x) => x.id === id);
+      if (!c) return [];
+      const seen = new Set<string>();
+      const out: ConversationFileRef[] = [];
+      for (const m of c.messages) {
+        for (const a of m.attachments ?? []) {
+          if (!a?.path || seen.has(a.path)) continue;
+          seen.add(a.path);
+          out.push({ name: a.name, path: a.path, kind: a.kind, size: a.size, mime: a.mime, origin: 'attachment' });
+        }
+      }
+      return out;
     },
   };
 
@@ -950,20 +985,37 @@ class MockApi implements RunWorkerApi {
       void force;
       await new Promise((r) => setTimeout(r, 1100));
       const checkedAt = Date.now();
+      // 预览模式不伪造「有新版本」，避免误以为可以升级；更新内容在「本次更新」面板里展示
       return {
         currentVersion: __APP_VERSION__,
-        latestVersion: '0.1.0',
-        available: true,
+        latestVersion: __APP_VERSION__,
+        available: false,
         prerelease: false,
-        notes: '新增：定时任务失败重试、MCP HTTP 传输、知识库增量索引。\n优化：首字延迟降低 30%，安装包体积减少 18%。\n修复：部分高分屏下窗口阴影错位。',
+        notes: '当前为浏览器预览模式，更新检测与安装仅在桌面版可用。',
         publishedAt: new Date(checkedAt - 86400000 * 2).toISOString(),
-        downloadUrl: 'https://github.com/LHRonline/run-worker/releases/latest',
         releaseUrl: 'https://github.com/LHRonline/run-worker/releases',
         checkedAt,
       };
     },
     open: async (): Promise<void> => {
       window.open('https://github.com/LHRonline/run-worker/releases/latest', '_blank', 'noopener,noreferrer');
+    },
+    install: async (): Promise<UpdateProgress> => {
+      const stages: UpdateProgress[] = [
+        { stage: 'downloading', percent: 35, text: '预览模式：模拟下载中…' },
+        { stage: 'verifying', percent: 100, text: '预览模式：模拟校验完成' },
+      ];
+      for (const p of stages) {
+        this.updateProgressListeners.forEach((cb) => cb(p));
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      const done: UpdateProgress = {
+        stage: 'done',
+        percent: 100,
+        text: '浏览器预览不执行真实安装，请在桌面版中升级。',
+      };
+      this.updateProgressListeners.forEach((cb) => cb(done));
+      return done;
     },
   };
 
@@ -1008,6 +1060,12 @@ class MockApi implements RunWorkerApi {
       this.updateListeners.push(cb);
       return () => {
         this.updateListeners = this.updateListeners.filter((x) => x !== cb);
+      };
+    },
+    onUpdateProgress: (cb: (p: UpdateProgress) => void): (() => void) => {
+      this.updateProgressListeners.push(cb);
+      return () => {
+        this.updateProgressListeners = this.updateProgressListeners.filter((x) => x !== cb);
       };
     },
     onSettingsChanged: (cb: (s: Settings) => void): (() => void) => {
@@ -1181,6 +1239,9 @@ class MockApi implements RunWorkerApi {
         cachedTokens: conv.usage.cachedTokens + usage.cachedTokens,
         totalTokens: conv.usage.totalTokens + usage.totalTokens,
         costCny: conv.usage.costCny + usage.costCny,
+        tokenSource: 'estimated',
+        exactRequests: conv.usage.exactRequests ?? 0,
+        totalRequests: (conv.usage.totalRequests ?? 0) + 1,
       };
       this.touchConversation(conv.id);
       this.save();

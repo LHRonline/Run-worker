@@ -246,7 +246,9 @@ test('版本比较：字母补丁号高于同数字版本（0.0.3a > 0.0.3）', 
 
 test('界面版本号不再硬编码为旧版本（防止与实际构建版本脱节）', () => {
   const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.0.3a', `package.json 版本应为 0.0.3a，实际 ${pkg.version}`);
+  const { compareVersion } = require(path.join(DIST, 'main/platform/updater.js'));
+  assert.match(pkg.version, /^\d+\.\d+\.\d+[a-z]?$/, `package.json 版本格式异常：${pkg.version}`);
+  assert.ok(compareVersion(pkg.version, '0.0.3a') >= 0, '当前版本不应低于 0.0.3a');
 
   // 递归扫描渲染进程源码，检查是否还残留旧的硬编码版本号
   const hardcoded = /(['"])0\.0\.1\1/;

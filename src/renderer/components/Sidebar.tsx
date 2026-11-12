@@ -34,6 +34,7 @@ export function Sidebar() {
   const [draft, setDraft] = useState('');
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [removing, setRemoving] = useState<ConversationMeta | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   const collapsed = ui.sidebarCollapsed;
 
@@ -123,6 +124,19 @@ export function Sidebar() {
         </div>
       </div>
 
+      {state.updateInfo?.available ? (
+        <button
+          type="button"
+          className="update-banner"
+          title="打开设置 → 更新，在应用内下载并安装"
+          onClick={() => actions.openSettings(true)}
+        >
+          <span className="ub-dot" />
+          <span className="ub-text">发现新版本 v{state.updateInfo.latestVersion}</span>
+          <span className="ub-arrow">↗</span>
+        </button>
+      ) : null}
+
       <div className="sidebar-scroll">
         {query ? (
           <>
@@ -170,6 +184,16 @@ export function Sidebar() {
 
             <div className="section-label">
               最近对话<span className="count">{recent.length}</span>
+              {metas.length > 0 ? (
+                <button
+                  type="button"
+                  className="section-act"
+                  title="彻底清空全部对话：文件、索引、派生记忆与产物一起删除"
+                  onClick={() => setClearing(true)}
+                >
+                  清空全部
+                </button>
+              ) : null}
             </div>
             {recent.length === 0 ? (
               <div className="sidebar-empty">
@@ -303,10 +327,21 @@ export function Sidebar() {
 
       {removing ? (
         <Confirm
-          title="删除对话"
-          text={`「${removing.title}」及其全部消息、工具记录会被永久删除，无法恢复。`}
+          title="彻底删除对话"
+          text={`「${removing.title}」将被永久擦除，包括：会话文件与索引条目、全部消息与工具记录、该会话派生出的长期记忆（含你的纠正）、以及该会话产生的产物文件（图片 / 生成物）。正在执行的任务会一并中止。此操作不可恢复。`}
+          confirmLabel="彻底删除"
           onClose={() => setRemoving(null)}
           onConfirm={() => void actions.removeConversation(removing.id)}
+        />
+      ) : null}
+
+      {clearing ? (
+        <Confirm
+          title="彻底清空全部对话"
+          text={`共 ${metas.length} 个对话将被永久擦除：所有会话文件与索引、全部消息与工具记录、由对话派生的长期记忆、以及所有产物文件（含旧版本遗留的散落文件）。正在执行的任务会全部中止。此操作不可恢复。`}
+          confirmLabel="全部清空"
+          onClose={() => setClearing(false)}
+          onConfirm={() => void actions.clearConversations()}
         />
       ) : null}
     </aside>

@@ -208,6 +208,12 @@ export function ChatView() {
                         onRetry={() => void retry(i)}
                         allowRetry={m.role === 'assistant' && m.status === 'error'}
                         collapseThinking={settings.appearance.collapseThinking}
+                        showTokens={settings.thinking.showTokens}
+                        onCorrect={
+                          m.role === 'assistant'
+                            ? (text) => void actions.correctMessage(text, conversation.id)
+                            : undefined
+                        }
                       />
                     );
                   })}

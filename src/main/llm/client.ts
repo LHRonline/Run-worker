@@ -65,6 +65,8 @@ export interface RawUsage {
   prompt_cache_miss_tokens?: number;
   completion_tokens_details?: { reasoning_tokens?: number };
   prompt_tokens_details?: { cached_tokens?: number };
+  /** 内部标记：这一轮的 token 是本地估算，不是服务商返回的精确值 */
+  __estimated?: boolean;
 }
 
 export interface StreamChatOptions {
@@ -249,25 +251,73 @@ function parseToolCalls(acc: Map<number, ParsedToolCall>): ParsedToolCall[] {
     .filter((v) => v.name);
 }
 
+/**
+ * 本地 token 估算：中文按字、其余按 ~3.6 字符/token。仅在服务端完全不返回 usage 时兜底，
+ * 会打 __estimated 标记，界面据此显示「约」而不是冒充精确值。
+ */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  const cjk = (text.match(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length;
+  const rest = Math.max(0, text.length - cjk);
+  return Math.max(1, Math.round(cjk * 1.05 + rest / 3.6));
+}
+
+function messagesTokenEstimate(messages: LlmMessage[]): number {
+  let n = 0;
+  for (const m of messages) {
+    n += 4;
+    if (typeof m.content === 'string') n += estimateTokens(m.content);
+    else for (const p of m.content) n += p.type === 'text' ? estimateTokens(p.text) : 85;
+    if (m.tool_calls) n += estimateTokens(JSON.stringify(m.tool_calls));
+  }
+  return n;
+}
+
+/** 服务商没给 usage 时用估算兜底，并明确标记来源 */
+function withUsageFallback(usage: RawUsage, opts: StreamChatOptions, text: string, reasoning: string): RawUsage {
+  if ((usage.prompt_tokens ?? 0) > 0 || (usage.completion_tokens ?? 0) > 0 || (usage.total_tokens ?? 0) > 0) {
+    return usage;
+  }
+  const prompt = messagesTokenEstimate(opts.messages);
+  const completion = estimateTokens(text + reasoning);
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: prompt + completion,
+    __estimated: true,
+  };
+}
+
 /** 流式对话：逐块回调增量，返回完整结果 */
 export async function streamChat(opts: StreamChatOptions): Promise<StreamChatResult> {
   const retries = opts.retries ?? 2;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
   let includeUsage = true;
   let lastError: unknown = null;
+  // 跨 attempt 累计：只要已经向界面吐出过内容，整轮重试就会产生重复文本，必须停止重试。
+  let emittedTotal = 0;
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    let emitted = 0;
     try {
-      const result = await runOnce({ ...opts, timeoutMs }, includeUsage, () => emitted);
+      const wrapped: StreamChatOptions = {
+        ...opts,
+        onDelta: (d) => {
+          emittedTotal += 1;
+          opts.onDelta?.(d);
+        },
+        onReasoning: (d) => {
+          emittedTotal += 1;
+          opts.onReasoning?.(d);
+        },
+      };
+      const result = await runOnce({ ...wrapped, timeoutMs }, includeUsage, () => emittedTotal);
       return result.value;
     } catch (err) {
       lastError = err;
-      emitted = (err as { emitted?: number }).emitted ?? 0;
       if (err instanceof LlmError && err.message.includes('stream_options')) includeUsage = false;
       const aborted = opts.signal?.aborted === true;
       const retryable = err instanceof LlmError ? err.retryable : !aborted;
-      if (aborted || !retryable || attempt >= retries || emitted > 0) break;
+      if (aborted || !retryable || attempt >= retries || emittedTotal > 0) break;
       await sleep(600 * 2 ** attempt);
     }
   }
@@ -340,6 +390,7 @@ async function runOnce(
         usage = raw.usage;
         opts.onUsage?.(usage);
       }
+      usage = withUsageFallback(usage, opts, text, think);
       return { value: { text, reasoning: think, toolCalls: [], usage, finishReason: choice?.finish_reason ?? 'stop' } };
     }
 
@@ -410,6 +461,7 @@ async function runOnce(
     if (!text && !reasoning && toolAcc.size === 0) {
       throw new LlmError('模型没有返回任何内容，请检查模型名或稍后重试。', 0, true);
     }
+    usage = withUsageFallback(usage, opts, text, reasoning);
     return { value: { text, reasoning, toolCalls: parseToolCalls(toolAcc), usage, finishReason: finishReason || 'stop' } };
   } catch (err) {
     const wrapped = wrapError(err, combined.timedOut(), opts.signal, opts.target.kind);

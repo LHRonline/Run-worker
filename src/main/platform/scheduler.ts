@@ -10,9 +10,15 @@ import * as path from 'node:path';
 import { EVT } from '../../shared/ipc';
 import type { AgentRunner, PlatformDeps, TaskScheduler } from '../../shared/platform';
 import type { AgentId, ScheduledTask, TaskRun } from '../../shared/types';
+// 复用 store.ts 的原子写（含 Windows 占用回退与 tmp 清理）。
+// store.ts 顶层只依赖 shared 层的 presets / types / ipc / platform，
+// shared 层不反向 import main，故此处单向依赖不会形成循环。
+import { writeJsonAtomic } from '../store';
 
 const TICK_MS = 30_000;
 const HISTORY_LIMIT = 100;
+/** task-output/*.md 滚动清理后保留的最近文件数 */
+const OUTPUT_KEEP = 100;
 /** nextRunAt 最大向前搜索范围：1 年 */
 const MAX_SEARCH_MINUTES = 366 * 24 * 60;
 
@@ -134,22 +140,78 @@ function dayMatches(f: CronFields, date: Date): boolean {
   return true;
 }
 
-/** 计算下一次执行时间（分钟对齐，逐分钟向前找，最多 1 年） */
-function nextCronTime(fields: CronFields, from: number): number | undefined {
-  const start = new Date(from);
-  start.setSeconds(0, 0);
-  const cursor = new Date(start.getTime() + 60_000);
+/** 集合中严格大于 cur 的最小值 */
+function nextAllowed(set: Set<number>, cur: number): number | undefined {
+  let best: number | undefined;
+  for (const v of set) {
+    if (v > cur && (best === undefined || v < best)) best = v;
+  }
+  return best;
+}
 
-  for (let i = 0; i < MAX_SEARCH_MINUTES; i += 1) {
-    if (
-      fields.months.has(cursor.getMonth() + 1) &&
-      dayMatches(fields, cursor) &&
-      fields.hours.has(cursor.getHours()) &&
-      fields.minutes.has(cursor.getMinutes())
-    ) {
+/** 集合中的最小值 */
+function minAllowed(set: Set<number>): number {
+  let best = Infinity;
+  for (const v of set) if (v < best) best = v;
+  return best;
+}
+
+/** 计算下一次执行时间：按 月 / 日 / 时 / 分 逐级跳进，取代逐分钟暴力搜索。
+ *  语义与原逐分钟扫描完全一致：从 from 的下一分钟起，找第一个同时满足
+ *  月份、dom/dow（OR 规则）、小时、分钟 的时刻；超过 1 年仍未命中返回 undefined。 */
+function nextCronTime(fields: CronFields, from: number): number | undefined {
+  const aligned = new Date(from);
+  aligned.setSeconds(0, 0);
+  const deadline = aligned.getTime() + MAX_SEARCH_MINUTES * 60_000;
+  const cursor = new Date(aligned.getTime() + 60_000);
+
+  const minHour = minAllowed(fields.hours);
+  const minMinute = minAllowed(fields.minutes);
+  const minMonth = minAllowed(fields.months);
+
+  while (cursor.getTime() <= deadline) {
+    // 每次跳进都必须让游标前进；本地时区 DST 回退时退化为绝对时间 +1 分钟兜底
+    const before = cursor.getTime();
+    const month = cursor.getMonth() + 1;
+
+    if (!fields.months.has(month)) {
+      // 月：不在允许月份时跳到下个允许月的 1 号（无更大月份则跨年到最小月份）
+      const next = nextAllowed(fields.months, month);
+      if (next === undefined) cursor.setFullYear(cursor.getFullYear() + 1, minMonth - 1, 1);
+      else cursor.setMonth(next - 1, 1);
+      cursor.setHours(minHour, minMinute, 0, 0);
+    } else if (!dayMatches(fields, cursor)) {
+      // 日：dom/dow 不匹配时整日跳过（跨月时由下一轮的月份判断继续校正）
+      cursor.setDate(cursor.getDate() + 1);
+      cursor.setHours(minHour, minMinute, 0, 0);
+    } else if (!fields.hours.has(cursor.getHours())) {
+      // 时：跳到当天下一个允许小时，没有则顺延到次日
+      const next = nextAllowed(fields.hours, cursor.getHours());
+      if (next === undefined) {
+        cursor.setDate(cursor.getDate() + 1);
+        cursor.setHours(minHour, minMinute, 0, 0);
+      } else {
+        cursor.setHours(next, minMinute, 0, 0);
+      }
+    } else if (!fields.minutes.has(cursor.getMinutes())) {
+      // 分：跳到当前小时下一个允许分钟，没有则进位到下一个允许小时 / 次日
+      const next = nextAllowed(fields.minutes, cursor.getMinutes());
+      if (next === undefined) {
+        const nextHour = nextAllowed(fields.hours, cursor.getHours());
+        if (nextHour === undefined) {
+          cursor.setDate(cursor.getDate() + 1);
+          cursor.setHours(minHour, minMinute, 0, 0);
+        } else {
+          cursor.setHours(nextHour, minMinute, 0, 0);
+        }
+      } else {
+        cursor.setMinutes(next, 0, 0);
+      }
+    } else {
       return cursor.getTime();
     }
-    cursor.setTime(cursor.getTime() + 60_000);
+
+    if (cursor.getTime() <= before) cursor.setTime(before + 60_000);
   }
   return undefined;
 }
@@ -158,12 +220,6 @@ function nextCronTime(fields: CronFields, from: number): number | undefined {
 
 function newId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function writeJsonAtomic(file: string, data: unknown): void {
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-  fs.renameSync(tmp, file);
 }
 
 function readJson<T>(file: string, fallback: T, log: PlatformDeps['log']): T {
@@ -227,6 +283,8 @@ export function createScheduler(deps: PlatformDeps & { runner: AgentRunner }): T
   let timer: NodeJS.Timeout | null = null;
   /** 正在执行的任务 id，防止重入 */
   const running = new Set<string>();
+  /** tick 互斥：setInterval 不等待上次 tick 完成，需防止多个 tick 重叠并发 */
+  let ticking = false;
 
   fs.mkdirSync(dir, { recursive: true });
 
@@ -271,6 +329,36 @@ export function createScheduler(deps: PlatformDeps & { runner: AgentRunner }): T
 
   function emitChanged(): void {
     deps.emit(EVT.tasksChanged, tasks);
+  }
+
+  /** task-output/*.md 滚动清理：按 mtime 保留最近 OUTPUT_KEEP 个，忽略一切异常 */
+  function pruneOutputs(): void {
+    try {
+      if (!fs.existsSync(outputDir)) return;
+      const files = fs
+        .readdirSync(outputDir, { withFileTypes: true })
+        .filter((e) => e.isFile() && e.name.endsWith('.md'))
+        .map((e) => {
+          const full = path.join(outputDir, e.name);
+          let mtime = 0;
+          try {
+            mtime = fs.statSync(full).mtimeMs;
+          } catch {
+            /* 单个文件状态读取失败按最旧处理 */
+          }
+          return { full, mtime };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+      for (const f of files.slice(OUTPUT_KEEP)) {
+        try {
+          fs.rmSync(f.full, { force: true });
+        } catch {
+          /* 忽略删除失败 */
+        }
+      }
+    } catch {
+      /* 忽略清理整体异常 */
+    }
   }
 
   /** 执行任务并返回本次运行记录 */
@@ -326,6 +414,8 @@ export function createScheduler(deps: PlatformDeps & { runner: AgentRunner }): T
       } catch (err) {
         deps.log.warn('[scheduler] 写入任务输出文件失败', err);
       }
+      // 写盘后滚动清理旧输出（异常已在内部忽略）
+      pruneOutputs();
     }
 
     if (task.kind === 'once') {
@@ -342,18 +432,24 @@ export function createScheduler(deps: PlatformDeps & { runner: AgentRunner }): T
   }
 
   async function tick(): Promise<void> {
-    const now = Date.now();
-    const due = tasks.filter(
-      (t) => t.enabled && typeof t.nextRunAt === 'number' && t.nextRunAt <= now && !running.has(t.id),
-    );
+    if (ticking) return;
+    ticking = true;
+    try {
+      const now = Date.now();
+      const due = tasks.filter(
+        (t) => t.enabled && typeof t.nextRunAt === 'number' && t.nextRunAt <= now && !running.has(t.id),
+      );
 
-    for (const task of due) {
-      // 逐个串行执行，避免同时打满模型配额
-      try {
-        await execute(task);
-      } catch (err) {
-        deps.log.error('[scheduler] 任务调度异常', err);
+      for (const task of due) {
+        // 逐个串行执行，避免同时打满模型配额
+        try {
+          await execute(task);
+        } catch (err) {
+          deps.log.error('[scheduler] 任务调度异常', err);
+        }
       }
+    } finally {
+      ticking = false;
     }
   }
 

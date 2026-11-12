@@ -15,6 +15,7 @@ import type {
   Settings,
   TaskRun,
   UpdateInfo,
+  UpdateProgress,
 } from './types';
 
 export interface Logger {
@@ -86,6 +87,8 @@ export interface MemoryStore {
   list(): MemoryFact[];
   add(fact: Partial<MemoryFact> & { text: string }): MemoryFact[];
   forget(id: string): MemoryFact[];
+  /** 按来源批量删除（如删除某个对话时清掉它派生出的记忆） */
+  forgetBySource(source: string | string[]): MemoryFact[];
   clear(): MemoryFact[];
   recall(query: string, topK?: number): MemoryFact[];
   /** 生成注入提示词的紧凑摘要 */
@@ -97,6 +100,8 @@ export interface MemoryStore {
 export interface Updater {
   check(force?: boolean): Promise<UpdateInfo>;
   current(): UpdateInfo | null;
+  /** 应用内一键升级：下载 → SHA-256 校验 → 拉起静默安装器；进度走 EVT.updateProgress */
+  install(): Promise<UpdateProgress>;
 }
 
 /* --------------------------- 安全策略 -------------------------- */

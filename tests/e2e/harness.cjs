@@ -760,6 +760,67 @@ async function main() {
     return `available=true，latest=${info.latestVersion}`;
   });
 
+  /* ------------------------------ I. 0.0.3b 新能力 ------------------------------ */
+  await step('I1 Composer 增强菜单与一键升级 / 引用文件契约', 'src/renderer/components/Composer.tsx / shared/ipc.ts / preload/index.ts', async () => {
+    const contract = await js(win, `(() => {
+      const a = window.runworker;
+      return {
+        files: typeof a.conversations.files,
+        install: typeof a.update.install,
+        progress: typeof a.events.onUpdateProgress,
+        addBtn: !!document.querySelector('.add-btn'),
+      };
+    })()`);
+    assert(contract.files === 'function', `conversations.files 缺失（${contract.files}）`);
+    assert(contract.install === 'function', `update.install 缺失（${contract.install}）`);
+    assert(contract.progress === 'function', `events.onUpdateProgress 缺失（${contract.progress}）`);
+    assert(contract.addBtn, 'Composer 未渲染增强菜单按钮 .add-btn');
+
+    const menuText = await js(win, `(async () => {
+      const btn = document.querySelector('.add-btn');
+      btn.click();
+      await new Promise((r) => setTimeout(r, 150));
+      const el = document.querySelector('.add-menu');
+      const text = el ? String(el.textContent || '') : '';
+      btn.click();
+      return text;
+    })()`);
+    for (const label of ['添加文件', '引用对话文件', '模式', '专家', '技能', '连接器']) {
+      assert(menuText.includes(label), `增强菜单缺少「${label}」项，实际：${menuText.slice(0, 120)}`);
+    }
+    return `六项菜单齐全，契约完整`;
+  });
+
+  await step('I2 彻底删除：返回擦除报告且会话文件与索引都消失', 'src/main/ipc.ts convRemove / src/main/store.ts deleteConversation', async () => {
+    const r = await js(win, `(async () => {
+      const c = await window.runworker.conversations.create('E2E 彻底删除');
+      const report = await window.runworker.conversations.remove(c.id);
+      const after = await window.runworker.conversations.get(c.id);
+      const list = await window.runworker.conversations.list();
+      return { report, gone: after === null, listed: list.some((m) => m.id === c.id) };
+    })()`);
+    assert(r.report && typeof r.report === 'object', 'convRemove 未返回擦除报告');
+    for (const key of ['files', 'artifacts', 'memories', 'runs']) {
+      assert(typeof r.report[key] === 'number', `擦除报告缺少数值字段 ${key}`);
+    }
+    assert(Array.isArray(r.report.failed), '擦除报告缺少 failed 数组');
+    assert(r.report.files >= 1, `报告显示只删了 ${r.report.files} 个会话文件`);
+    assert(r.gone, 'conversations.get 仍能读到已删除会话');
+    assert(!r.listed, '已删除会话仍出现在索引列表里');
+    return `files=${r.report.files} artifacts=${r.report.artifacts} memories=${r.report.memories} runs=${r.report.runs}`;
+  });
+
+  await step('I3 精准 token：无服务端 usage 时标为估算且不为 0', 'src/main/chat/service.ts estimatedUsage / src/main/store.ts sumUsage', async () => {
+    assert(run1, '缺少演示模式会话 id');
+    const conv = await js(win, `window.runworker.conversations.get(${JSON.stringify(run1.conversationId)})`);
+    assert(conv && Array.isArray(conv.messages), '读不到会话消息');
+    const assistant = conv.messages.filter((m) => m.role === 'assistant').pop();
+    assert(assistant && assistant.usage, '助手消息缺少 usage 统计');
+    assert(assistant.usage.totalTokens > 0, '不应显示 0 token');
+    assert(assistant.usage.tokenSource === 'estimated', `演示模式应标注为估算，实际 ${assistant.usage.tokenSource}`);
+    return `totalTokens=${assistant.usage.totalTokens} source=${assistant.usage.tokenSource}`;
+  });
+
   /* ------------------------------ H. 渲染进程健康 ------------------------------ */
   await step('H1 无渲染崩溃 / 加载失败 / 非 CSP 的控制台错误', 'dist/renderer 控制台输出 / preload 注入', async () => {
     const fatal = rendererErrors.filter((e) => e.kind === 'preload-error' || e.kind === 'render-process-gone' || e.kind === 'did-fail-load');
