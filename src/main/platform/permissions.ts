@@ -150,7 +150,7 @@ function isInsideSystemDir(target: string): boolean {
   return false;
 }
 
-export function createPermissionGuard(settings: () => Settings): PermissionGuard {
+export function createPermissionGuard(settings: () => Settings, extraRoots: () => string[] = () => []): PermissionGuard {
   /** denyPatterns 命中检测（正则非法时退化为子串匹配） */
   function hitDeny(normalizedText: string): string | null {
     const patterns = settings().agent?.denyPatterns ?? [];
@@ -266,22 +266,23 @@ export function createPermissionGuard(settings: () => Settings): PermissionGuard
         };
       }
 
-      const workspace = settings().agent?.workspaceDir ?? '';
-      if (workspace) {
+      // 全局工作目录 + 所有已登记的工作区文件夹，都算「自己地盘」
+      const roots = [settings().agent?.workspaceDir ?? '', ...extraRoots()].filter(Boolean);
+      for (const root of roots) {
         let ws = '';
         let p = '';
         try {
-          ws = path.resolve(workspace).toLowerCase();
+          ws = path.resolve(root).toLowerCase();
           p = path.resolve(raw).toLowerCase();
         } catch {
-          ws = '';
+          continue;
         }
         if (ws && (p === ws || p.startsWith(ws + '\\') || p.startsWith(ws + '/'))) {
           return {
             allowed: true,
             requiresApproval: needApproval('low'),
             risk: 'low',
-            reason: '写入工作目录内的普通文件',
+            reason: '写入工作区文件夹内的普通文件',
           };
         }
       }

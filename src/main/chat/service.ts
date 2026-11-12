@@ -2,6 +2,7 @@
  * Run worker — 对话服务：一次 run 的完整生命周期
  * 入参立即返回 runId，之后全部通过 EVT.run 流式推送，结束时落库。
  */
+import fs from 'node:fs';
 import type {
   AgentId,
   AgentTraceStep,
@@ -276,7 +277,21 @@ export class ChatService {
     };
   }
 
-  private systemPrompt(settings: Settings, agent: AgentId, knowledge: string): string {
+  /** 会话绑定的工作区文件夹；没绑定或目录失效时回退全局工作目录 */
+  private workspaceFor(conv: Conversation): string {
+    const ws = conv.workspaceId ? this.ctx.store.getWorkspace(conv.workspaceId) : null;
+    if (ws?.path) {
+      try {
+        fs.mkdirSync(ws.path, { recursive: true });
+        return ws.path;
+      } catch {
+        /* 目录不可用，回退 */
+      }
+    }
+    return this.ctx.workspace();
+  }
+
+  private systemPrompt(settings: Settings, agent: AgentId, knowledge: string, workspaceDir: string): string {
     const memoryDigest = settings.memory.enabled && settings.memory.longTerm ? this.ctx.memory.digest(1000) : '';
     const base = buildSystemPrompt({
       persona: settings.persona,
@@ -284,7 +299,7 @@ export class ChatService {
       duty: agentRuntime(agent).duty,
       memory: memoryDigest,
       knowledge,
-      workspaceDir: this.ctx.workspace(),
+      workspaceDir,
       toolsEnabled: true,
       thinking: settings.thinking.enabled,
     });
@@ -556,7 +571,8 @@ export class ChatService {
     }
 
     /* ---------------------------- 主循环 ---------------------------- */
-    const messages: LlmMessage[] = [{ role: 'system', content: this.systemPrompt(settings, agent, kbContext) }, ...history];
+    const workspaceDir = this.workspaceFor(conv);
+    const messages: LlmMessage[] = [{ role: 'system', content: this.systemPrompt(settings, agent, kbContext, workspaceDir) }, ...history];
     const userParts = attachmentsToParts(req.attachments);
     messages.push(
       userParts.length > 0
@@ -568,7 +584,7 @@ export class ChatService {
     let thinking = '';
     let toolCalls: ToolCallRecord[] = [];
     let usages: RawUsage[] = [];
-    const rt = makeToolRuntime(this.ctx, runId, notify, conv.id);
+    const rt = makeToolRuntime(this.ctx, runId, notify, conv.id, workspaceDir);
 
     try {
       const result = await runAgentLoop({

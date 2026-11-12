@@ -58,13 +58,20 @@ const api: RunWorkerApi = {
   conversations: {
     list: () => ipcRenderer.invoke(IPC.convList),
     get: (id: string) => ipcRenderer.invoke(IPC.convGet, id),
-    create: (title?: string) => ipcRenderer.invoke(IPC.convCreate, title),
+    create: (title?: string, workspaceId?: string) => ipcRenderer.invoke(IPC.convCreate, { title, workspaceId }),
+    move: (id: string, workspaceId: string | null) => ipcRenderer.invoke(IPC.convMove, { id, workspaceId }),
     rename: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
     remove: (id: string) => ipcRenderer.invoke(IPC.convRemove, id),
     clear: () => ipcRenderer.invoke(IPC.convClear),
     pin: (id: string, pinned: boolean) => ipcRenderer.invoke(IPC.convPin, { id, pinned }),
     exportMarkdown: (id: string) => ipcRenderer.invoke(IPC.convExport, id),
     files: (id: string) => ipcRenderer.invoke(IPC.convFiles, id),
+  },
+  workspaces: {
+    list: () => ipcRenderer.invoke(IPC.workspaceList),
+    add: (input) => ipcRenderer.invoke(IPC.workspaceAdd, input),
+    rename: (id: string, name: string) => ipcRenderer.invoke(IPC.workspaceRename, { id, name }),
+    remove: (id: string) => ipcRenderer.invoke(IPC.workspaceRemove, id),
   },
   agents: {
     list: () => ipcRenderer.invoke(IPC.agentsList),

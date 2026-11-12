@@ -94,6 +94,7 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
       providers: PROVIDER_PRESETS,
       agents: AGENTS,
       conversations: ctx.store.listConversations(),
+      workspaces: ctx.store.listWorkspaces(),
       mcp: ctx.mcp.statuses(),
       tasks: ctx.scheduler.list(),
       knowledge: ctx.kb.list(),
@@ -222,7 +223,30 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
 
   handle(IPC.convGet, (id: string) => ctx.store.getConversation(id));
 
-  handle(IPC.convCreate, (title?: string) => ctx.store.createConversation(title));
+  handle(IPC.convCreate, (payload?: { title?: string; workspaceId?: string }) =>
+    ctx.store.createConversation(payload?.title, 'orchestrator', payload?.workspaceId));
+
+  handle(IPC.convMove, (payload: { id: string; workspaceId: string | null }) => {
+    if (!payload?.id) throw new Error('缺少会话 id。');
+    ctx.store.moveConversation(payload.id, payload.workspaceId ?? null);
+  });
+
+  handle(IPC.workspaceList, () => ctx.store.listWorkspaces());
+
+  handle(IPC.workspaceAdd, (input: { name: string; path?: string; parentId?: string }) => {
+    if (!input?.name?.trim()) throw new Error('请填写工作区名称。');
+    return ctx.store.addWorkspace(input);
+  });
+
+  handle(IPC.workspaceRename, (payload: { id: string; name: string }) => {
+    if (!payload?.id) throw new Error('缺少工作区 id。');
+    return ctx.store.renameWorkspace(payload.id, payload.name ?? '');
+  });
+
+  handle(IPC.workspaceRemove, (id: string) => {
+    if (!id) throw new Error('缺少工作区 id。');
+    return ctx.store.removeWorkspace(id);
+  });
 
   handle(IPC.convRename, (payload: { id: string; title: string }) => {
     if (!payload?.id) throw new Error('缺少会话 id。');

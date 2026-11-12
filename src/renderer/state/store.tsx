@@ -32,6 +32,7 @@ import type {
   UpdateInfo,
   UpdateProgress,
   UsageStats,
+  Workspace,
 } from '@shared/types';
 import { createDefaultSettings } from '@shared/presets';
 import { api } from '../lib/bridge';
@@ -70,6 +71,9 @@ export interface AppState {
   metas: ConversationMeta[];
   conversations: Record<string, Conversation>;
   activeId: string | null;
+  workspaces: Workspace[];
+  /** 新对话默认固定到的工作区；null 表示不固定 */
+  activeWorkspaceId: string | null;
   view: View;
   ui: UiState;
   runs: Record<string, RunInfo>;
@@ -103,6 +107,8 @@ const initialState: AppState = {
   metas: [],
   conversations: {},
   activeId: null,
+  workspaces: [],
+  activeWorkspaceId: null,
   view: 'chat',
   ui: { sidebarCollapsed: false, railOpen: true },
   runs: {},
@@ -158,7 +164,9 @@ type Action =
   | { type: 'TOAST_REMOVE'; id: string }
   | { type: 'SET_SETTINGS_OPEN'; open: boolean }
   | { type: 'SET_SYSTEM_THEME'; theme: 'dark' | 'light' }
-  | { type: 'SET_QUERY'; query: string };
+  | { type: 'SET_QUERY'; query: string }
+  | { type: 'SET_WORKSPACES'; workspaces: Workspace[] }
+  | { type: 'SET_ACTIVE_WORKSPACE'; id: string | null };
 
 function withMessage(conv: Conversation, messageId: string, fn: (m: ChatMessage) => ChatMessage): Conversation {
   let changed = false;
@@ -182,6 +190,7 @@ function syncMeta(metas: ConversationMeta[], conv: Conversation): ConversationMe
     agentId: conv.agentId,
     usage: conv.usage,
     preview: last?.content.replace(/\s+/g, ' ').slice(0, 80) ?? conv.preview,
+    workspaceId: conv.workspaceId,
   };
   const idx = metas.findIndex((m) => m.id === conv.id);
   const next = idx >= 0 ? metas.map((m) => (m.id === conv.id ? meta : m)) : [meta, ...metas];
@@ -360,6 +369,7 @@ function reducer(state: AppState, action: Action): AppState {
         agents: p.agents,
         presets: p.providers,
         metas: p.conversations,
+        workspaces: p.workspaces ?? [],
         tasks: p.tasks,
         knowledge: p.knowledge,
         memory: p.memory,
@@ -514,6 +524,10 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, systemTheme: action.theme };
     case 'SET_QUERY':
       return { ...state, query: action.query };
+    case 'SET_WORKSPACES':
+      return { ...state, workspaces: action.workspaces };
+    case 'SET_ACTIVE_WORKSPACE':
+      return { ...state, activeWorkspaceId: action.id };
     default:
       return state;
   }
@@ -522,7 +536,13 @@ function reducer(state: AppState, action: Action): AppState {
 export interface StoreActions {
   setView(view: View): void;
   selectConversation(id: string): Promise<void>;
-  newConversation(agentId?: AgentId, title?: string): Promise<Conversation | null>;
+  newConversation(agentId?: AgentId, title?: string, workspaceId?: string): Promise<Conversation | null>;
+  setActiveWorkspace(id: string | null): void;
+  addWorkspace(input: { name: string; path?: string; parentId?: string }): Promise<void>;
+  renameWorkspace(id: string, name: string): Promise<void>;
+  removeWorkspace(id: string): Promise<void>;
+  /** 把会话归入 / 移出工作区 */
+  moveConversation(id: string, workspaceId: string | null): Promise<void>;
   renameConversation(id: string, title: string): Promise<void>;
   togglePin(id: string): Promise<void>;
   removeConversation(id: string): Promise<void>;
@@ -724,9 +744,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
 
-      newConversation: async (agentId, title) => {
+      newConversation: async (agentId, title, workspaceId) => {
         try {
-          const conv = await api.conversations.create(title);
+          const bind = workspaceId ?? stateRef.current.activeWorkspaceId ?? undefined;
+          const conv = await api.conversations.create(title, bind);
           const next = agentId ? { ...conv, agentId } : conv;
           dispatch({ type: 'UPSERT_CONV', conversation: next });
           if (agentId) {
@@ -737,6 +758,53 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch (err) {
           toast('error', `新建对话失败：${err instanceof Error ? err.message : String(err)}`);
           return null;
+        }
+      },
+
+      setActiveWorkspace: (id) => dispatch({ type: 'SET_ACTIVE_WORKSPACE', id }),
+
+      addWorkspace: async (input) => {
+        try {
+          const workspaces = await api.workspaces.add(input);
+          dispatch({ type: 'SET_WORKSPACES', workspaces });
+          toast('success', `工作区「${input.name}」已添加`);
+        } catch (err) {
+          toast('error', `添加工作区失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+
+      renameWorkspace: async (id, name) => {
+        try {
+          const workspaces = await api.workspaces.rename(id, name);
+          dispatch({ type: 'SET_WORKSPACES', workspaces });
+        } catch (err) {
+          toast('error', `重命名失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+
+      removeWorkspace: async (id) => {
+        try {
+          const workspaces = await api.workspaces.remove(id);
+          dispatch({ type: 'SET_WORKSPACES', workspaces });
+          const metas = await api.conversations.list();
+          dispatch({ type: 'SET_METAS', metas });
+          if (stateRef.current.activeWorkspaceId === id) dispatch({ type: 'SET_ACTIVE_WORKSPACE', id: null });
+          toast('success', '工作区已移除，文件夹本身保留在磁盘上');
+        } catch (err) {
+          toast('error', `移除工作区失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+
+      moveConversation: async (id, workspaceId) => {
+        try {
+          await api.conversations.move(id, workspaceId);
+          const metas = await api.conversations.list();
+          dispatch({ type: 'SET_METAS', metas });
+          const conv = await api.conversations.get(id);
+          if (conv) dispatch({ type: 'LOAD_CONV', conversation: conv });
+          toast('success', workspaceId ? '已移入工作区' : '已移出工作区');
+        } catch (err) {
+          toast('error', `移动对话失败：${err instanceof Error ? err.message : String(err)}`);
         }
       },
 
@@ -831,7 +899,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         let convId = snapshot.activeId;
         if (!convId || !snapshot.conversations[convId]) {
           try {
-            const conv = await api.conversations.create(shortTitle(clean));
+            const conv = await api.conversations.create(shortTitle(clean), stateRef.current.activeWorkspaceId ?? undefined);
             dispatch({ type: 'UPSERT_CONV', conversation: conv });
             convId = conv.id;
           } catch (err) {

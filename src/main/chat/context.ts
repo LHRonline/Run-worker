@@ -91,7 +91,10 @@ export function createContext(opts: ContextOptions): MainContext {
     kb: createKnowledgeBase(deps),
     memory: createMemoryStore(deps),
     updater: createUpdater({ ...deps, appVersion: opts.appInfo.version, repoUrl: opts.appInfo.repoUrl }),
-    permissions: createPermissionGuard(() => store.getSettings()),
+    permissions: createPermissionGuard(
+      () => store.getSettings(),
+      () => store.listWorkspaces().map((w) => w.path),
+    ),
     approval: new ApprovalBroker(emit),
     chat: undefined as unknown as ChatService,
   };
@@ -112,7 +115,10 @@ export function makeToolRuntime(
   runId: string,
   notify: (level: 'info' | 'warn' | 'error', text: string) => void,
   conversationId?: string,
+  workspaceDir?: string,
 ): ToolRuntime {
+  // 会话绑定了工作区就用它的文件夹，工具读写、shell cwd、产物都落在这里
+  const base = workspaceDir || ctx.workspace();
   return {
     settings: () => ctx.settings(),
     permissions: ctx.permissions,
@@ -121,10 +127,10 @@ export function makeToolRuntime(
     scheduler: ctx.scheduler,
     mcp: ctx.mcp,
     log: ctx.log,
-    workspace: () => ctx.workspace(),
+    workspace: () => base,
     // 产物落到工作目录下的隐藏文件夹，既方便用户找到，又不污染项目根；
     // 按会话分目录，删除会话时可以连同产物一起彻底清掉。
-    artifactsDir: path.join(ctx.workspace(), '.runworker-artifacts', conversationId ?? '_shared'),
+    artifactsDir: path.join(base, '.runworker-artifacts', conversationId ?? '_shared'),
     async askApproval(req) {
       return ctx.approval.request({
         runId,

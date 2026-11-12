@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createDefaultSettings } from '../shared/presets';
 import { DEFAULT_USAGE } from '../shared/types';
-import type { AgentId, ChatMessage, Conversation, ConversationFileRef, ConversationMeta, Settings } from '../shared/types';
+import type { AgentId, ChatMessage, Conversation, ConversationFileRef, ConversationMeta, Settings, Workspace } from '../shared/types';
 import type { DeepPartial } from '../shared/ipc';
 import type { Logger } from '../shared/platform';
 
@@ -22,6 +22,8 @@ export interface StorePaths {
   logsDir: string;
   workspaceDir: string;
   artifactsDir: string;
+  /** 工作区（文件夹）清单 */
+  workspacesFile: string;
 }
 
 export function resolvePaths(root: string): StorePaths {
@@ -34,6 +36,7 @@ export function resolvePaths(root: string): StorePaths {
     logsDir: path.join(root, 'logs'),
     workspaceDir: path.join(root, 'workspace'),
     artifactsDir: path.join(root, 'artifacts'),
+    workspacesFile: path.join(root, 'workspaces.json'),
   };
 }
 
@@ -236,7 +239,11 @@ function mimeOfExt(file: string): string {
   return map[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
 }
 
-export function createEmptyConversation(title?: string, agentId: AgentId = 'orchestrator'): Conversation {
+export function createEmptyConversation(
+  title?: string,
+  agentId: AgentId = 'orchestrator',
+  workspaceId?: string,
+): Conversation {
   const now = Date.now();
   return {
     id: newId('conv'),
@@ -248,6 +255,7 @@ export function createEmptyConversation(title?: string, agentId: AgentId = 'orch
     agentId,
     usage: { ...DEFAULT_USAGE },
     preview: '',
+    ...(workspaceId ? { workspaceId } : {}),
     messages: [],
   };
 }
@@ -263,6 +271,7 @@ function toMeta(conv: Conversation): ConversationMeta {
     agentId: conv.agentId,
     usage: conv.usage ?? sumUsage(conv.messages),
     preview: previewOf(conv.messages),
+    workspaceId: conv.workspaceId,
   };
 }
 
@@ -290,6 +299,8 @@ export class Store {
   private index: ConversationMeta[] = [];
   /** 会话正文缓存，避免频繁磁盘读 */
   private cache = new Map<string, Conversation>();
+  /** 工作区（文件夹）清单，独立持久化，旧版本没有这个文件 */
+  private workspaces: Workspace[] = [];
   /** API Key 编解码器（app ready 后注入 safeStorage 实现；单测/无加密环境为 null） */
   private codec: SecretsCodec | null = null;
 
@@ -300,6 +311,107 @@ export class Store {
     }
     this.settings = this.loadSettings();
     this.loadIndex();
+    this.loadWorkspaces();
+  }
+
+  /* -------------------------- 工作区 -------------------------- */
+
+  private loadWorkspaces(): void {
+    const raw = readJsonRaw(this.paths.workspacesFile);
+    this.workspaces = Array.isArray(raw)
+      ? raw
+          .filter((w): w is Workspace => !!w && typeof (w as Workspace).id === 'string' && typeof (w as Workspace).path === 'string')
+          .map((w) => ({
+            id: w.id,
+            name: String(w.name ?? '未命名工作区'),
+            path: w.path,
+            ...(w.parentId ? { parentId: w.parentId } : {}),
+            createdAt: Number(w.createdAt) || Date.now(),
+          }))
+      : [];
+  }
+
+  private persistWorkspaces(): void {
+    writeJsonAtomic(this.paths.workspacesFile, this.workspaces);
+  }
+
+  listWorkspaces(): Workspace[] {
+    return [...this.workspaces].sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  getWorkspace(id?: string | null): Workspace | null {
+    if (!id) return null;
+    return this.workspaces.find((w) => w.id === id) ?? null;
+  }
+
+  addWorkspace(input: { name: string; path?: string; parentId?: string }): Workspace[] {
+    const name = (input.name || '').trim().slice(0, 80) || '未命名工作区';
+    let dir = (input.path || '').trim();
+    const parentId = input.parentId?.trim() || undefined;
+    if (parentId && !this.getWorkspace(parentId)) throw new Error('父工作区不存在。');
+    if (!dir) {
+      if (!parentId) throw new Error('请先选择工作区文件夹。');
+      const parent = this.getWorkspace(parentId)!;
+      // 用名字当真实子文件夹名，去掉 Windows 非法字符；这就是「套娃」的落盘位置
+      const safe = name.replace(/[\\/:*?"<>|]/g, '_').trim() || '子工作区';
+      dir = path.join(parent.path, safe);
+    }
+    dir = path.resolve(dir);
+    ensureDirSync(dir);
+    if (!fs.existsSync(dir)) throw new Error(`无法创建工作区文件夹：${dir}`);
+    // 同一个真实文件夹不重复登记
+    if (this.workspaces.some((w) => path.resolve(w.path).toLowerCase() === dir.toLowerCase())) {
+      return this.listWorkspaces();
+    }
+    const ws: Workspace = {
+      id: newId('ws'),
+      name,
+      path: dir,
+      ...(parentId ? { parentId } : {}),
+      createdAt: Date.now(),
+    };
+    this.workspaces.push(ws);
+    this.persistWorkspaces();
+    return this.listWorkspaces();
+  }
+
+  renameWorkspace(id: string, name: string): Workspace[] {
+    const ws = this.getWorkspace(id);
+    if (ws) {
+      ws.name = name.trim().slice(0, 80) || ws.name;
+      this.persistWorkspaces();
+    }
+    return this.listWorkspaces();
+  }
+
+  /** 只解除绑定，不删除磁盘上的文件夹；子工作区一并解除，避免误删用户文件 */
+  removeWorkspace(id: string): Workspace[] {
+    const doomed = new Set<string>([id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const w of this.workspaces) {
+        if (w.parentId && doomed.has(w.parentId) && !doomed.has(w.id)) {
+          doomed.add(w.id);
+          changed = true;
+        }
+      }
+    }
+    this.workspaces = this.workspaces.filter((w) => !doomed.has(w.id));
+    this.persistWorkspaces();
+    for (const meta of this.index) {
+      if (meta.workspaceId && doomed.has(meta.workspaceId)) {
+        const conv = this.getConversation(meta.id);
+        if (conv) {
+          delete conv.workspaceId;
+          this.saveConversation(conv);
+        } else {
+          delete meta.workspaceId;
+        }
+      }
+    }
+    this.persistIndex();
+    return this.listWorkspaces();
   }
 
   /* -------------------------- 设置 -------------------------- */
@@ -451,10 +563,28 @@ export class Store {
     return conv;
   }
 
-  createConversation(title?: string, agentId: AgentId = 'orchestrator'): Conversation {
-    const conv = createEmptyConversation(title, agentId);
+  createConversation(title?: string, agentId: AgentId = 'orchestrator', workspaceId?: string): Conversation {
+    const conv = createEmptyConversation(title, agentId, workspaceId);
     this.saveConversation(conv);
     return conv;
+  }
+
+  /** 把会话归入某个工作区（null 表示移出），正文与索引一起更新 */
+  moveConversation(id: string, workspaceId: string | null): void {
+    if (workspaceId && !this.getWorkspace(workspaceId)) throw new Error('工作区不存在。');
+    const conv = this.getConversation(id);
+    if (!conv) {
+      const meta = this.index.find((m) => m.id === id);
+      if (meta) {
+        if (workspaceId) meta.workspaceId = workspaceId;
+        else delete meta.workspaceId;
+        this.persistIndex();
+      }
+      return;
+    }
+    if (workspaceId) conv.workspaceId = workspaceId;
+    else delete conv.workspaceId;
+    this.saveConversation(conv);
   }
 
   saveConversation(conv: Conversation): Conversation {

@@ -325,6 +325,79 @@
   gap: 2px;
 }
 
+/* ---------------- 工作区（文件夹）分组 ---------------- */
+.ws-pinned {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ws-pinned:hover { color: var(--text); }
+.ws-pinned-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-pinned-x { opacity: 0.65; font-size: 11px; }
+.sidebar.collapsed .ws-pinned { display: none; }
+
+.ws-tree { display: flex; flex-direction: column; gap: 2px; }
+.ws-tree.nested { gap: 1px; }
+
+.ws-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 6px 0 4px;
+  border-radius: 8px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.14s, color 0.14s;
+}
+
+.ws-row:hover { background: var(--hover); color: var(--text); }
+.ws-row.active { background: var(--accent-soft); color: var(--text); }
+
+.ws-caret {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.ws-caret:hover { color: var(--text); }
+.ws-folder { flex: 0 0 auto; color: var(--faint); }
+.ws-row.active .ws-folder { color: var(--accent-2); }
+.ws-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-input { font-size: 12.5px; }
+
+.ws-row-actions { display: flex; align-items: center; opacity: 0; }
+.ws-row:hover .ws-row-actions,
+.ws-row.active .ws-row-actions { opacity: 1; }
+
+.ws-children { margin-left: 13px; padding-left: 7px; border-left: 1px solid var(--line); }
+.ws-conv .conv-item { height: 30px; padding-left: 8px; font-size: 12.2px; }
+.ws-draft-row { display: flex; align-items: center; height: 28px; padding: 0 6px; }
+.ws-hint { font-size: 11.5px; line-height: 1.6; }
+.ctx-head { padding: 6px 10px 4px; font-size: 10.5px; letter-spacing: 0.06em; color: var(--faint); }
+.ctx-empty { padding: 6px 10px; font-size: 11.5px; color: var(--faint); }
+.sidebar.collapsed .ws-tree,
+.sidebar.collapsed .ws-hint { display: none; }
+
 .conv-item {
   position: relative;
   display: flex;

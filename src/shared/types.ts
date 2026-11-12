@@ -235,6 +235,15 @@ export interface Citation {
   score: number;
 }
 
+/** 工作区：磁盘上一个真实文件夹；parentId 指向父工作区，可层层嵌套 */
+export interface Workspace {
+  id: string;
+  name: string;
+  path: string;
+  parentId?: string;
+  createdAt: number;
+}
+
 export interface ConversationMeta {
   id: string;
   title: string;
@@ -245,6 +254,8 @@ export interface ConversationMeta {
   agentId: AgentId;
   usage: UsageStats;
   preview: string;
+  /** 绑定的工作区；为空表示未归入任何工作区 */
+  workspaceId?: string;
 }
 
 export interface Conversation extends ConversationMeta {
@@ -538,6 +549,7 @@ export interface BootstrapPayload {
   providers: ProviderPreset[];
   agents: AgentDescriptor[];
   conversations: ConversationMeta[];
+  workspaces: Workspace[];
   mcp: McpServerStatus[];
   tasks: ScheduledTask[];
   knowledge: KnowledgeSource[];

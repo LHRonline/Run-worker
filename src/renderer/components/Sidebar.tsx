@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ConversationMeta, ThemeMode } from '@shared/types';
+import type { ConversationMeta, ThemeMode, Workspace } from '@shared/types';
 import { api } from '../lib/bridge';
 import { formatRelative } from '../lib/format';
 import { useStore, type View } from '../state/store';
@@ -25,22 +25,33 @@ interface MenuState {
   meta: ConversationMeta;
   x: number;
   y: number;
+  /** 是否显示「移动到工作区」子菜单 */
+  move?: boolean;
 }
 
 export function Sidebar() {
   const { state, actions } = useStore();
-  const { metas, ui, view, activeId, query, settings } = state;
+  const { metas, ui, view, activeId, query, settings, workspaces, activeWorkspaceId } = state;
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [removing, setRemoving] = useState<ConversationMeta | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [wsOpen, setWsOpen] = useState<Record<string, boolean>>({});
+  const [wsMenu, setWsMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  /** child:<父id> 或 rename:<id> */
+  const [wsDraftFor, setWsDraftFor] = useState<string | null>(null);
+  const [wsDraft, setWsDraft] = useState('');
+  const [removingWs, setRemovingWs] = useState<Workspace | null>(null);
 
   const collapsed = ui.sidebarCollapsed;
 
   useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
+    if (!menu && !wsMenu) return;
+    const close = () => {
+      setMenu(null);
+      setWsMenu(null);
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setMenu(null);
     };
@@ -52,7 +63,7 @@ export function Sidebar() {
       window.removeEventListener('scroll', close, true);
       document.removeEventListener('keydown', onKey);
     };
-  }, [menu]);
+  }, [menu, wsMenu]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return metas;
@@ -87,6 +98,48 @@ export function Sidebar() {
     }
   };
 
+  const addTopWorkspace = async () => {
+    const dir = await api.app.pickDirectory();
+    if (!dir) return;
+    const name = dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '工作区';
+    await actions.addWorkspace({ name, path: dir });
+  };
+
+  const commitWsDraft = async () => {
+    const key = wsDraftFor;
+    const name = wsDraft.trim();
+    setWsDraftFor(null);
+    setWsDraft('');
+    if (!key || !name) return;
+    if (key.startsWith('child:')) await actions.addWorkspace({ name, parentId: key.slice(6) });
+    else if (key.startsWith('rename:')) await actions.renameWorkspace(key.slice(7), name);
+  };
+
+  const newChatIn = (wsId: string) => {
+    actions.setActiveWorkspace(wsId);
+    void actions.newConversation(undefined, undefined, wsId);
+  };
+
+  const renderWsConversations = (wsId: string) => (
+    <ConversationList
+      list={filtered.filter((m) => m.workspaceId === wsId)}
+      collapsed={collapsed}
+      activeId={activeId}
+      editingId={editingId}
+      draft={draft}
+      onDraft={setDraft}
+      onCommit={commitRename}
+      onCancel={() => setEditingId(null)}
+      onSelect={(id) => void actions.selectConversation(id)}
+      onRename={startRename}
+      onMenu={(meta, e) => setMenu({ meta, x: e.clientX, y: e.clientY })}
+      onPin={(meta) => void actions.togglePin(meta.id)}
+    />
+  );
+
+  const wsMenuWorkspace = wsMenu ? workspaces.find((w) => w.id === wsMenu.id) ?? null : null;
+  const activeWsName = workspaces.find((w) => w.id === activeWorkspaceId)?.name;
+
   const providerName = settings.providers.find((p) => p.id === settings.activeProviderId)?.name ?? '未配置渠道';
   const theme = settings.appearance.theme;
 
@@ -108,6 +161,17 @@ export function Sidebar() {
           </span>
           <span className="label">新建对话</span>
         </button>
+        {activeWorkspaceId ? (
+          <button
+            type="button"
+            className="ws-pinned"
+            title="接下来的新对话会固定到这个文件夹，点击取消固定"
+            onClick={() => actions.setActiveWorkspace(null)}
+          >
+            <span className="ws-pinned-name">固定在：{activeWsName ?? '工作区'}</span>
+            <span className="ws-pinned-x">✕</span>
+          </button>
+        ) : null}
         <div className="search-box">
           <Icon name="search" size={13} className="search-ic" />
           <input
@@ -219,7 +283,49 @@ export function Sidebar() {
             )}
 
             <div className="section-label" style={{ marginTop: 8 }}>
-              工作区
+              工作区<span className="count">{workspaces.length}</span>
+              <button
+                type="button"
+                className="section-act"
+                title="选一个文件夹作为工作区，之后的新对话都固定在这里"
+                onClick={() => void addTopWorkspace()}
+              >
+                ＋ 添加
+              </button>
+            </div>
+            {workspaces.length === 0 ? (
+              <div className="sidebar-empty ws-hint">选一个文件夹，就能在里面一层层建工作区</div>
+            ) : (
+              <WorkspaceTree
+                parentId={null}
+                depth={0}
+                ctx={{
+                  workspaces,
+                  metas: filtered,
+                  activeWorkspaceId,
+                  openMap: wsOpen,
+                  toggleOpen: (id) => setWsOpen((prev) => ({ ...prev, [id]: !(prev[id] ?? true) })),
+                  pick: (id) => actions.setActiveWorkspace(id),
+                  newChat: newChatIn,
+                  openMenu: (ws, e) => {
+                    setWsOpen((prev) => ({ ...prev, [ws.id]: true }));
+                    setWsMenu({ id: ws.id, x: e.clientX, y: e.clientY });
+                  },
+                  draftFor: wsDraftFor,
+                  draft: wsDraft,
+                  onDraft: setWsDraft,
+                  commitDraft: () => void commitWsDraft(),
+                  cancelDraft: () => {
+                    setWsDraftFor(null);
+                    setWsDraft('');
+                  },
+                  renderConversations: renderWsConversations,
+                }}
+              />
+            )}
+
+            <div className="section-label" style={{ marginTop: 8 }}>
+              功能
             </div>
             <nav className="nav-group">
               {NAV.map((item) => {
@@ -300,26 +406,114 @@ export function Sidebar() {
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 190 }} onMouseDown={() => setMenu(null)} />
           <div className="ctx-menu" style={{ left: menu.x, top: menu.y }}>
-            <button type="button" className="ctx-item" onClick={() => void actions.togglePin(menu.meta.id)}>
-              <span>{menu.meta.pinned ? '⇩' : '⇧'}</span>
-              {menu.meta.pinned ? '取消置顶' : '置顶对话'}
+            {menu.move ? (
+              <>
+                <div className="ctx-head">移动到工作区</div>
+                {workspaces.length === 0 ? <div className="ctx-empty">还没有工作区</div> : null}
+                {workspaces.map((ws) => (
+                  <button
+                    key={ws.id}
+                    type="button"
+                    className="ctx-item"
+                    onClick={() => {
+                      void actions.moveConversation(menu.meta.id, ws.id);
+                      setMenu(null);
+                    }}
+                  >
+                    <span>▤</span>
+                    {ws.name}
+                  </button>
+                ))}
+                <div className="ctx-sep" />
+                <button
+                  type="button"
+                  className="ctx-item"
+                  onClick={() => {
+                    void actions.moveConversation(menu.meta.id, null);
+                    setMenu(null);
+                  }}
+                >
+                  <span>↩</span>移出工作区
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="button" className="ctx-item" onClick={() => void actions.togglePin(menu.meta.id)}>
+                  <span>{menu.meta.pinned ? '⇩' : '⇧'}</span>
+                  {menu.meta.pinned ? '取消置顶' : '置顶对话'}
+                </button>
+                <button type="button" className="ctx-item" onClick={() => startRename(menu.meta)}>
+                  <span>✎</span>重命名
+                </button>
+                <button type="button" className="ctx-item" onClick={() => void exportMarkdown(menu.meta)}>
+                  <span>⇪</span>导出 Markdown
+                </button>
+                <button type="button" className="ctx-item" onClick={() => setMenu({ ...menu, move: true })}>
+                  <span>▤</span>移动到工作区
+                </button>
+                <div className="ctx-sep" />
+                <button
+                  type="button"
+                  className="ctx-item danger"
+                  onClick={() => {
+                    setRemoving(menu.meta);
+                    setMenu(null);
+                  }}
+                >
+                  <span>⌫</span>删除对话
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      ) : null}
+
+      {wsMenu && wsMenuWorkspace ? (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 190 }} onMouseDown={() => setWsMenu(null)} />
+          <div className="ctx-menu" style={{ left: wsMenu.x, top: wsMenu.y }}>
+            <button
+              type="button"
+              className="ctx-item"
+              onClick={() => {
+                setWsDraftFor(`child:${wsMenuWorkspace.id}`);
+                setWsDraft('');
+                setWsMenu(null);
+              }}
+            >
+              <span>＋</span>新建子工作区
             </button>
-            <button type="button" className="ctx-item" onClick={() => startRename(menu.meta)}>
+            <button
+              type="button"
+              className="ctx-item"
+              onClick={() => {
+                setWsDraftFor(`rename:${wsMenuWorkspace.id}`);
+                setWsDraft(wsMenuWorkspace.name);
+                setWsMenu(null);
+              }}
+            >
               <span>✎</span>重命名
             </button>
-            <button type="button" className="ctx-item" onClick={() => void exportMarkdown(menu.meta)}>
-              <span>⇪</span>导出 Markdown
+            <button
+              type="button"
+              className="ctx-item"
+              onClick={() => {
+                void api.app.openPath(wsMenuWorkspace.path);
+                setWsMenu(null);
+              }}
+            >
+              <span>↗</span>打开文件夹
             </button>
             <div className="ctx-sep" />
             <button
               type="button"
               className="ctx-item danger"
               onClick={() => {
-                setRemoving(menu.meta);
-                setMenu(null);
+                setRemovingWs(wsMenuWorkspace);
+                setWsMenu(null);
               }}
             >
-              <span>⌫</span>删除对话
+              <span>⌫</span>移除工作区
             </button>
           </div>
         </>
@@ -342,6 +536,19 @@ export function Sidebar() {
           confirmLabel="全部清空"
           onClose={() => setClearing(false)}
           onConfirm={() => void actions.clearConversations()}
+        />
+      ) : null}
+
+      {removingWs ? (
+        <Confirm
+          title="移除工作区"
+          text={`「${removingWs.name}」和它下面的子工作区会从列表里移除，这些工作区里的对话变成未分组。磁盘上的文件夹和文件不会删除。`}
+          confirmLabel="移除"
+          onClose={() => setRemovingWs(null)}
+          onConfirm={() => {
+            void actions.removeWorkspace(removingWs.id);
+            setRemovingWs(null);
+          }}
         />
       ) : null}
     </aside>
@@ -434,6 +641,139 @@ function ConversationList({
                   ⋯
                 </button>
               </span>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 工作区树：一层套一层，每层下面挂着绑定到此工作区的对话              */
+/* ------------------------------------------------------------------ */
+
+interface WsTreeCtx {
+  workspaces: Workspace[];
+  metas: ConversationMeta[];
+  activeWorkspaceId: string | null;
+  openMap: Record<string, boolean>;
+  toggleOpen(id: string): void;
+  pick(id: string): void;
+  newChat(id: string): void;
+  openMenu(ws: Workspace, e: React.MouseEvent): void;
+  draftFor: string | null;
+  draft: string;
+  onDraft(v: string): void;
+  commitDraft(): void;
+  cancelDraft(): void;
+  renderConversations(wsId: string): React.ReactNode;
+}
+
+function WorkspaceTree({ parentId, depth, ctx }: { parentId: string | null; depth: number; ctx: WsTreeCtx }) {
+  const nodes = ctx.workspaces.filter((w) => (w.parentId ?? null) === parentId);
+  if (nodes.length === 0) return null;
+  return (
+    <div className={`ws-tree${depth > 0 ? ' nested' : ''}`}>
+      {nodes.map((ws) => {
+        const children = ctx.workspaces.filter((w) => w.parentId === ws.id);
+        const convs = ctx.metas.filter((m) => m.workspaceId === ws.id);
+        const open = ctx.openMap[ws.id] ?? true;
+        const renaming = ctx.draftFor === `rename:${ws.id}`;
+        const draftingChild = ctx.draftFor === `child:${ws.id}`;
+        const hasContent = children.length > 0 || convs.length > 0 || draftingChild;
+        return (
+          <div className="ws-node" key={ws.id}>
+            <div
+              className={`ws-row${ctx.activeWorkspaceId === ws.id ? ' active' : ''}`}
+              title={ws.path}
+              onClick={() => ctx.pick(ws.id)}
+            >
+              <button
+                type="button"
+                className="ws-caret"
+                title={open ? '收起' : '展开'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  ctx.toggleOpen(ws.id);
+                }}
+              >
+                {hasContent ? (open ? '▾' : '▸') : '·'}
+              </button>
+              <svg
+                className="ws-folder"
+                width="14"
+                height="14"
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                aria-hidden="true"
+              >
+                <path d="M2.5 5.5a2 2 0 0 1 2-2h3l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2z" />
+              </svg>
+              {renaming ? (
+                <input
+                  className="conv-title-input ws-input"
+                  value={ctx.draft}
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => ctx.onDraft(e.target.value)}
+                  onBlur={ctx.commitDraft}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') ctx.commitDraft();
+                    if (e.key === 'Escape') ctx.cancelDraft();
+                  }}
+                />
+              ) : (
+                <span className="ws-name">{ws.name}</span>
+              )}
+              <span className="ws-row-actions">
+                <button
+                  type="button"
+                  className="conv-act"
+                  title="在这个工作区新建对话"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    ctx.newChat(ws.id);
+                  }}
+                >
+                  ＋
+                </button>
+                <button
+                  type="button"
+                  className="conv-act"
+                  title="工作区操作"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    ctx.openMenu(ws, e);
+                  }}
+                >
+                  ⋯
+                </button>
+              </span>
+            </div>
+            {open && hasContent ? (
+              <div className="ws-children">
+                {draftingChild ? (
+                  <div className="ws-draft-row">
+                    <input
+                      className="conv-title-input ws-input"
+                      value={ctx.draft}
+                      autoFocus
+                      placeholder="子文件夹名称"
+                      onChange={(e) => ctx.onDraft(e.target.value)}
+                      onBlur={ctx.commitDraft}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') ctx.commitDraft();
+                        if (e.key === 'Escape') ctx.cancelDraft();
+                      }}
+                    />
+                  </div>
+                ) : null}
+                {children.length > 0 ? <WorkspaceTree parentId={ws.id} depth={depth + 1} ctx={ctx} /> : null}
+                {convs.length > 0 ? <div className="ws-conv">{ctx.renderConversations(ws.id)}</div> : null}
+              </div>
             ) : null}
           </div>
         );

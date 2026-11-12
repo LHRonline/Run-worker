@@ -37,6 +37,7 @@ import type {
   UpdateInfo,
   UpdateProgress,
   UsageStats,
+  Workspace,
 } from '@shared/types';
 import { DEFAULT_USAGE } from '@shared/types';
 import { AGENTS } from '@shared/agents';
@@ -51,6 +52,8 @@ export const isDesktop = typeof window !== 'undefined' && Boolean(window.runwork
 
 const LS_KEY = 'runworker.preview.state.v2';
 const MOCK_NOW = Date.now();
+/** 预览模式下的工作区（真实桌面端由主进程持久化） */
+const mockWorkspaces: Workspace[] = [];
 
 interface MockData {
   settings: Settings;
@@ -555,6 +558,7 @@ class MockApi implements RunWorkerApi {
       providers: PROVIDER_PRESETS,
       agents: AGENTS,
       conversations: meta,
+      workspaces: [...mockWorkspaces],
       mcp: Object.values(this.data.mcpStatus),
       tasks: this.data.tasks,
       knowledge: this.data.knowledge,
@@ -683,6 +687,49 @@ class MockApi implements RunWorkerApi {
     },
   };
 
+  workspaces = {
+    list: async (): Promise<Workspace[]> => [...mockWorkspaces],
+    add: async (input: { name: string; path?: string; parentId?: string }): Promise<Workspace[]> => {
+      const name = input.name.trim() || '未命名工作区';
+      const parent = mockWorkspaces.find((w) => w.id === input.parentId);
+      const ws: Workspace = {
+        id: `ws-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+        name,
+        path: input.path || `${parent?.path ?? 'D:/RunWorker/工作区'}/${name}`,
+        ...(input.parentId ? { parentId: input.parentId } : {}),
+        createdAt: Date.now(),
+      };
+      mockWorkspaces.push(ws);
+      return [...mockWorkspaces];
+    },
+    rename: async (id: string, name: string): Promise<Workspace[]> => {
+      const ws = mockWorkspaces.find((w) => w.id === id);
+      if (ws) ws.name = name.trim() || ws.name;
+      return [...mockWorkspaces];
+    },
+    remove: async (id: string): Promise<Workspace[]> => {
+      const doomed = new Set<string>([id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const w of mockWorkspaces) {
+          if (w.parentId && doomed.has(w.parentId) && !doomed.has(w.id)) {
+            doomed.add(w.id);
+            changed = true;
+          }
+        }
+      }
+      for (const c of this.data.conversations) {
+        if (c.workspaceId && doomed.has(c.workspaceId)) delete c.workspaceId;
+      }
+      for (let i = mockWorkspaces.length - 1; i >= 0; i -= 1) {
+        if (doomed.has(mockWorkspaces[i].id)) mockWorkspaces.splice(i, 1);
+      }
+      this.save();
+      return [...mockWorkspaces];
+    },
+  };
+
   conversations = {
     list: async (): Promise<ConversationMeta[]> =>
       this.data.conversations.map(metaOf).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt),
@@ -690,7 +737,7 @@ class MockApi implements RunWorkerApi {
       const c = this.data.conversations.find((x) => x.id === id);
       return c ? structuredClone(c) : null;
     },
-    create: async (title?: string): Promise<Conversation> => {
+    create: async (title?: string, workspaceId?: string): Promise<Conversation> => {
       const now = Date.now();
       const conv: Conversation = {
         id: `conv-${now.toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
@@ -702,11 +749,19 @@ class MockApi implements RunWorkerApi {
         agentId: 'orchestrator',
         usage: emptyUsage(),
         preview: '',
+        ...(workspaceId ? { workspaceId } : {}),
         messages: [],
       };
       this.data.conversations.unshift(conv);
       this.save();
       return structuredClone(conv);
+    },
+    move: async (id: string, workspaceId: string | null): Promise<void> => {
+      const c = this.data.conversations.find((x) => x.id === id);
+      if (!c) return;
+      if (workspaceId) c.workspaceId = workspaceId;
+      else delete c.workspaceId;
+      this.save();
     },
     rename: async (id: string, title: string): Promise<void> => {
       const c = this.data.conversations.find((x) => x.id === id);

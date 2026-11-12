@@ -300,8 +300,29 @@ async function main() {
   // 跳过首次引导，直接进入主界面（否则 Onboarding 会盖住底部设置按钮，I1 步骤无法点击设置）
   try {
     fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ onboardingDone: true }));
+    // 工作区分组回归种子：一个真实文件夹 + 一个绑定到它的会话
+    const wsDir = path.join(userData, '演示工作区');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(userData, 'workspaces.json'), JSON.stringify([
+      { id: 'ws-e2e', name: '演示工作区', path: wsDir, createdAt: Date.now() },
+    ]));
+    const convDir = path.join(userData, 'conversations');
+    fs.mkdirSync(convDir, { recursive: true });
+    const usage = {
+      promptTokens: 0, completionTokens: 0, reasoningTokens: 0, cachedTokens: 0,
+      totalTokens: 0, costCny: 0, tokenSource: 'estimated', exactRequests: 0, totalRequests: 0,
+    };
+    const conv = {
+      id: 'conv-e2e', title: '分组里的对话', createdAt: 1, updatedAt: Date.now(),
+      pinned: false, messageCount: 0, agentId: 'orchestrator', usage,
+      preview: '', workspaceId: 'ws-e2e', messages: [],
+    };
+    fs.writeFileSync(path.join(convDir, 'conv-e2e.json'), JSON.stringify(conv));
+    const { messages, ...meta } = conv;
+    void messages;
+    fs.writeFileSync(path.join(convDir, 'index.json'), JSON.stringify([meta]));
   } catch {
-    /* 忽略：种子文件缺失只会影响 I1，不影响前面的断言 */
+    /* 忽略：种子文件缺失只会影响 I1/I2，不影响前面的断言 */
   }
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -479,6 +500,34 @@ async function main() {
     assert(state.runworker === 'object', 'window.runworker 在 8s 后消失（preload 崩溃？）');
     return `ready=${state.ready} 正文 ${state.len} 字`;
   });
+
+  /* I. 工作区分组：侧栏按文件夹分组，绑定的会话缩进显示在工作区下面 */
+  await step(
+    'I2 侧栏按工作区文件夹分组展示会话（工作区回归）',
+    'workspaces.json + ConversationMeta.workspaceId → Sidebar.tsx WorkspaceTree',
+    async () => {
+      const result = await evaluate(
+        `(async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        let tries = 0;
+        while (tries++ < 50 && !document.querySelector('.ws-tree .ws-row')) await sleep(100);
+        const row = document.querySelector('.ws-tree .ws-row');
+        if (!row) throw new Error('侧栏没有渲染工作区分组');
+        const name = row.querySelector('.ws-name');
+        if (!name || !name.textContent.includes('演示工作区')) {
+          throw new Error('工作区名称不对：' + (name && name.textContent));
+        }
+        const conv = document.querySelector('.ws-conv .conv-item .conv-title');
+        if (!conv || !conv.textContent.includes('分组里的对话')) {
+          throw new Error('工作区下没有缩进显示绑定的对话');
+        }
+        return '分组=' + name.textContent.trim() + '，子会话=' + conv.textContent.trim();
+      })()`,
+        { awaitPromise: true, timeout: 20000 },
+      );
+      return result;
+    },
+  );
 
   /* I. 0.0.3c 回归：设置页内点击「查看本次更新内容」弹窗必须盖在设置页之上 */
   await step(

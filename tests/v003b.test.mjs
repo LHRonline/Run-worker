@@ -339,7 +339,7 @@ test('更像人 / 自我改进：人设层与纠正优先级写进系统提示',
     toolsEnabled: true,
     thinking: false,
   });
-  assert.match(prompt, /像一个靠谱的同事/, '应注入人类化协作规则');
-  assert.match(prompt, /被纠正时先承认/, '被纠正时直接改');
-  assert.match(prompt, /【要求】的条目来自用户主动纠正/, '纠正记忆应被标为最高优先级');
+  assert.match(prompt, /像真人同事一样对话/, '应注入人类化协作规则');
+  assert.match(prompt, /被纠正时先认/, '被纠正时直接改');
+  assert.match(prompt, /【要求】是用户主动纠正/, '纠正记忆应被标为最高优先级');
 });

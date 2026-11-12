@@ -32,6 +32,7 @@ import type {
   ToastPayload,
   UpdateInfo,
   UpdateProgress,
+  Workspace,
 } from './types';
 
 /** 主进程处理器：invoke/handle */
@@ -67,6 +68,13 @@ export const IPC = {
   convExport: 'conv:export',
   /** 列出该会话可重新引用的文件（历史附件 + 产物） */
   convFiles: 'conv:files',
+  /** 把会话归入 / 移出工作区 */
+  convMove: 'conv:move',
+
+  workspaceList: 'workspace:list',
+  workspaceAdd: 'workspace:add',
+  workspaceRename: 'workspace:rename',
+  workspaceRemove: 'workspace:remove',
 
   agentsList: 'agents:list',
 
@@ -146,7 +154,9 @@ export interface RunWorkerApi {
   conversations: {
     list(): Promise<ConversationMeta[]>;
     get(id: string): Promise<Conversation | null>;
-    create(title?: string): Promise<Conversation>;
+    create(title?: string, workspaceId?: string): Promise<Conversation>;
+    /** workspaceId 传 null 表示移出工作区 */
+    move(id: string, workspaceId: string | null): Promise<void>;
     rename(id: string, title: string): Promise<void>;
     /** 彻底删除：会话文件 + 索引 + 派生记忆 + 产物，返回擦除报告 */
     remove(id: string): Promise<ConversationPurgeReport>;
@@ -155,6 +165,14 @@ export interface RunWorkerApi {
     exportMarkdown(id: string): Promise<string>;
     /** 该会话的附件与产物，供输入框「引用对话文件」使用 */
     files(id: string): Promise<ConversationFileRef[]>;
+  };
+  workspaces: {
+    list(): Promise<Workspace[]>;
+    /** path 为空时按 parentId 在父工作区文件夹里新建一个真实子文件夹 */
+    add(input: { name: string; path?: string; parentId?: string }): Promise<Workspace[]>;
+    rename(id: string, name: string): Promise<Workspace[]>;
+    /** 只解除绑定，不删除磁盘上的文件夹；子工作区一并解除 */
+    remove(id: string): Promise<Workspace[]>;
   };
   agents: {
     list(): Promise<AgentDescriptor[]>;
