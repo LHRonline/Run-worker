@@ -684,6 +684,41 @@ async function main() {
     return `status=success，enabled=false，lastRunAt=${new Date(task.lastRunAt).toLocaleTimeString('zh-CN', { hour12: false })}`;
   });
 
+  /* ------------------------------ F5. cron 跨月顺延提示 ------------------------------ */
+  // 验证 0.0.3 新增的 nextNote：日字段在当月不存在时顺延到下月并给出提示文案。
+  await step('F5 cron 日字段跨月顺延时给出 nextNote 提示', 'src/main/platform/scheduler.ts computeNextRun', async () => {
+    const now = new Date();
+    const maxDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    // 当月不足 31 天时，用 31 号必然跨月且当月不存在；否则退化为一致性检查（不依赖具体月份）
+    const crossMonth = maxDay < 31;
+    const day = crossMonth ? 31 : now.getDate();
+    const cron = `0 9 ${day} * *`;
+    const f5id = 'e2e-task-nextnote';
+    const task = {
+      id: f5id,
+      name: 'E2E 跨月提示',
+      prompt: 'hi',
+      agentId: 'orchestrator',
+      kind: 'cron',
+      cron,
+      enabled: true,
+      createdAt: Date.now(),
+      indexResult: false,
+    };
+    await js(win, `window.runworker.tasks.save(${JSON.stringify(task)})`);
+    const saved = (await js(win, 'window.runworker.tasks.list()')).find((t) => t.id === f5id);
+    assert(saved, 'tasks.list() 找不到刚保存的任务');
+    assert(typeof saved.nextNote === 'string' || saved.nextNote === undefined, 'nextNote 字段类型异常');
+    if (crossMonth) {
+      assert(saved.nextNote && saved.nextNote.includes('顺延'), `跨月应给出顺延提示，实际：${saved.nextNote}`);
+      assert(saved.nextNote.includes(String(day)), `nextNote 应提及日期 ${day}`);
+    }
+    await js(win, `window.runworker.tasks.remove(${JSON.stringify(f5id)})`);
+    return crossMonth
+      ? `nextNote=${JSON.stringify(saved.nextNote)}`
+      : `当月有 ${day} 号，nextNote=${saved.nextNote ?? 'undefined'}（一致性检查）`;
+  });
+
   /* ------------------------------ G. 更新检测 ------------------------------ */
   await step('G1 update.check(true) 返回结构完整的 UpdateInfo（离线也算通过）', 'src/main/platform/updater.ts check / ipc updateCheck', async () => {
     const info = await js(win, 'window.runworker.update.check(true)');

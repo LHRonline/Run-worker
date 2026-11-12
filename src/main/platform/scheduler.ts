@@ -178,14 +178,26 @@ function readJson<T>(file: string, fallback: T, log: PlatformDeps['log']): T {
   }
 }
 
-/** 计算任务的下一次执行时间 */
-function computeNextRun(task: ScheduledTask, from = Date.now()): number | undefined {
+/** 计算任务的下一次执行时间（导出供测试断言跨月顺延行为） */
+export function computeNextRun(task: ScheduledTask, from = Date.now()): number | undefined {
   if (!task.enabled) return undefined;
+  // 非 cron 任务或重新计算时清除上一次的顺延提示，避免残留
+  task.nextNote = undefined;
 
   if (task.kind === 'cron') {
     const fields = parseCron(task.cron ?? '');
     if (!fields) return undefined;
-    return nextCronTime(fields, from);
+    const next = nextCronTime(fields, from);
+    // 日字段被显式限制（如每月 31 号）时，若当月不存在该日期会顺延到后续月份
+    if (next && fields.dayRestricted) {
+      const fromD = new Date(from);
+      const nextD = new Date(next);
+      if (nextD.getFullYear() !== fromD.getFullYear() || nextD.getMonth() !== fromD.getMonth()) {
+        const days = [...fields.days].sort((a, b) => a - b).join('/');
+        task.nextNote = `设定的「每月 ${days} 号」在 ${fromD.getFullYear()}年${fromD.getMonth() + 1}月没有符合条件的日期，已顺延到 ${nextD.getFullYear()}年${nextD.getMonth() + 1}月${nextD.getDate()}日`;
+      }
+    }
+    return next;
   }
 
   if (task.kind === 'interval') {

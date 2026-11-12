@@ -4,7 +4,7 @@
 
 | 版本 | 安全更新 |
 | --- | --- |
-| 最新发布版本（当前 `0.0.1`） | ✅ |
+| 最新发布版本（当前 `0.0.3`） | ✅ |
 | 更早版本 | ❌ 建议先升级到最新补丁版本 |
 
 ## 报告漏洞
@@ -53,12 +53,12 @@ Run worker 的核心能力是“真的能动手”，因此需要明确风险边
 | 项目 | 现状 |
 | --- | --- |
 | 位置 | `%APPDATA%\Run worker\settings.json` 的 `providers[].apiKey` |
-| 形式 | **明文 JSON**，依赖操作系统用户目录的访问控制保护 |
-| 是否加密 | 否（0.0.x 未接入 DPAPI / 凭据管理器，这是已记录的取舍） |
+| 形式 | **加密 JSON**（`enc:v1:` 密文，自 0.0.2 起经 Electron `safeStorage` 落盘）；系统不支持凭据加密时回退明文并记日志 |
+| 是否加密 | 是（自 0.0.2 起，Windows DPAPI / macOS Keychain / Linux libsecret），内存态保持明文（LLM 调用与界面无感知） |
 | 是否上传 | 否。仅作为 `Authorization: Bearer` 头发送给你自己配置的模型接口 |
 | 是否进日志 | 否。主进程 `createLogger`（`src/main/store.ts`）统一脱敏后落盘，见下节 |
 
-因为 key 是明文，请注意：
+因为 key 落盘为密文、解密只在内存进行，请注意：
 
 - 不要把整个 `%APPDATA%\Run worker\` 目录提交到 Git 或上传网盘。
 - 导出/分享会话前检查内容（导出 Markdown **不含** Key，但可能含业务数据）。

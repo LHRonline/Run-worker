@@ -10,6 +10,13 @@ import type { ToolDefinition, ToolResult } from './types';
 
 const RETURN_LIMIT = 12_000;
 
+/** Windows 下可执行文件路径含空格时需引号包裹（spawn 的 file 参数） */
+export function safeExe(exe: string): string {
+  const t = exe.trim();
+  if (process.platform === 'win32' && /\s/.test(t) && !/^["'].*["']$/.test(t)) return `"${t}"`;
+  return t;
+}
+
 export const pythonTools: ToolDefinition[] = [
   {
     name: 'python.exec',
@@ -47,7 +54,7 @@ export const pythonTools: ToolDefinition[] = [
         temp = true;
       }
 
-      const python = settings.agent.pythonPath.trim() || 'python';
+      const python = safeExe(settings.agent.pythonPath.trim() || 'python');
       const timeoutMs = Math.min(600_000, Math.max(1000, Math.round(num(args, 'timeoutMs', settings.agent.commandTimeout))));
       rt.log.info('[python.exec]', python, scriptPath);
       const res = await runProcess({ command: python, args: [scriptPath], cwd, timeoutMs, signal: tc.signal });

@@ -358,6 +358,8 @@ export interface ScheduledTask {
   lastStatus?: 'success' | 'error' | 'running';
   lastResult?: string;
   nextRunAt?: number;
+  /** 调度提示（如 cron 日字段在当月不存在，顺延到下月） */
+  nextNote?: string;
   /** 结果写入知识库 */
   indexResult: boolean;
 }

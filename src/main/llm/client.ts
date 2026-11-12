@@ -15,6 +15,8 @@ export interface LlmTarget {
   apiKey: string;
   model: string;
   kind?: string;
+  /** 服务商展示名，用于错误提示中标注渠道 */
+  label?: string;
 }
 
 export type LlmRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -126,7 +128,28 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function friendlyStatus(status: number, detail: string): LlmError {
+/** 对本地地址（ollama 等）追加到 NO_PROXY，避免被系统/环境变量中的代理拦截。
+ *  Node fetch 的连接代理在每次请求时读取环境变量，因此动态设置即可生效。 */
+function ensureLocalNoProxy(baseUrl: string): void {
+  try {
+    const u = new URL(baseUrl);
+    const host = u.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' || host.endsWith('.local')) {
+      const cur = process.env.NO_PROXY || process.env.no_proxy || '';
+      const parts = cur ? cur.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      if (!parts.includes(host)) {
+        parts.push(host);
+        process.env.NO_PROXY = parts.join(',');
+        process.env.no_proxy = parts.join(',');
+      }
+    }
+  } catch {
+    /* 非法 URL 忽略 */
+  }
+}
+
+export function friendlyStatus(status: number, detail: string, label?: string): LlmError {
+  const who = label ? `（渠道：${label}）` : '';
   const extra = detail ? `（服务端信息：${detail.slice(0, 200)}）` : '';
   switch (status) {
     case 400:
@@ -142,7 +165,7 @@ function friendlyStatus(status: number, detail: string): LlmError {
     case 413:
       return new LlmError('上下文过长，请开启「Token 节省」或新建对话。', status, false);
     case 429:
-      return new LlmError('触发频率限制（429），已自动重试仍失败，请稍后再试或更换服务商。', status, true);
+      return new LlmError(`触发频率限制（429）${who}，已自动重试仍失败，请稍后再试或更换服务商。`, status, true);
     case 503:
       return new LlmError('服务端繁忙（503），请稍后重试。', status, true);
     default:
@@ -261,6 +284,7 @@ async function runOnce(
 ): Promise<{ value: StreamChatResult }> {
   const base = normalizeBaseUrl(opts.target.baseUrl);
   const url = joinUrl(base, '/chat/completions');
+  ensureLocalNoProxy(opts.target.baseUrl);
 
   const body: Record<string, unknown> = {
     model: opts.target.model,
@@ -291,7 +315,7 @@ async function runOnce(
       if (res.status === 400 && includeUsage && /stream_options/i.test(detail)) {
         throw new LlmError('stream_options 不被支持，正在降级重试。', 400, true);
       }
-      throw friendlyStatus(res.status, detail);
+      throw friendlyStatus(res.status, detail, opts.target.label);
     }
 
     const contentType = res.headers.get('content-type') || '';
@@ -388,7 +412,7 @@ async function runOnce(
     }
     return { value: { text, reasoning, toolCalls: parseToolCalls(toolAcc), usage, finishReason: finishReason || 'stop' } };
   } catch (err) {
-    const wrapped = wrapError(err, combined.timedOut(), opts.signal);
+    const wrapped = wrapError(err, combined.timedOut(), opts.signal, opts.target.kind);
     (wrapped as { emitted?: number }).emitted = emittedSoFar();
     throw wrapped;
   } finally {
@@ -403,7 +427,7 @@ async function runOnce(
   }
 }
 
-function wrapError(err: unknown, timedOut: boolean, signal?: AbortSignal): LlmError {
+export function wrapError(err: unknown, timedOut: boolean, signal?: AbortSignal, kind?: string): LlmError {
   if (err instanceof LlmError) return err;
   if (signal?.aborted) return new LlmError('已取消本次生成。', 0, false);
   if (timedOut) return new LlmError('请求超时，请检查网络或改用更快的服务商。', 0, true);
@@ -411,7 +435,8 @@ function wrapError(err: unknown, timedOut: boolean, signal?: AbortSignal): LlmEr
   if (name === 'AbortError') return new LlmError('已取消本次生成。', 0, false);
   const msg = err instanceof Error ? err.message : String(err);
   if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|fetch failed|network/i.test(msg)) {
-    return new LlmError(`无法连接服务商：${msg}。请检查网络、代理或本地服务是否已启动。`, 0, true);
+    const hint = kind === 'ollama' ? '。本地模型请先运行 `ollama serve` 并确保已拉取所需模型。' : '';
+    return new LlmError(`无法连接服务商：${msg}。请检查网络、代理或本地服务是否已启动${hint}`, 0, true);
   }
   return new LlmError(`请求出错：${msg}`, 0, true);
 }
@@ -455,6 +480,7 @@ export async function completeText(target: LlmTarget, user: string, opts: Comple
   if (opts.json) body.response_format = { type: 'json_object' };
 
   const combined = combineSignals(opts.signal, opts.timeoutMs ?? 60_000);
+  ensureLocalNoProxy(target.baseUrl);
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -462,13 +488,13 @@ export async function completeText(target: LlmTarget, user: string, opts: Comple
       body: JSON.stringify(body),
       signal: combined.signal,
     });
-    if (!res.ok) throw friendlyStatus(res.status, await safeText(res));
+    if (!res.ok) throw friendlyStatus(res.status, await safeText(res), target.label);
     const data = (await res.json()) as {
       choices?: Array<{ message?: { content?: string | null } }>;
     };
     return data.choices?.[0]?.message?.content?.trim() ?? '';
   } catch (err) {
-    throw wrapError(err, combined.timedOut(), opts.signal);
+    throw wrapError(err, combined.timedOut(), opts.signal, target.kind);
   } finally {
     combined.cleanup();
   }
@@ -488,14 +514,15 @@ export async function listModels(cfg: { providerId?: string; kind?: string; base
   const fallback = presetModelsFor(cfg.kind ?? cfg.providerId ?? '');
   try {
     const base = normalizeBaseUrl(cfg.baseUrl);
+    ensureLocalNoProxy(cfg.baseUrl);
     const res = await fetch(joinUrl(base, '/models'), {
       method: 'GET',
       headers: buildHeaders({ providerId: cfg.providerId ?? '', baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: '', kind: cfg.kind }),
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return fallback;
-    const data = (await res.json()) as { data?: Array<{ id?: string }> };
-    const models = (data.data ?? []).map((m) => m.id).filter((m): m is string => !!m);
+    const data = (await res.json()) as { data?: Array<{ id?: string; name?: string }> };
+    const models = (data.data ?? []).map((m) => m.id ?? m.name).filter((m): m is string => !!m);
     return models.length > 0 ? models.sort() : fallback;
   } catch {
     return fallback;

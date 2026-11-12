@@ -628,6 +628,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       dismissToast: (id) => dispatch({ type: 'TOAST_REMOVE', id }),
 
       selectConversation: async (id) => {
+        const prev = stateRef.current;
+        if (prev.activeId && prev.activeId !== id) {
+          const running = Object.values(prev.runs).find((r) => r.status === 'running' && r.conversationId === prev.activeId);
+          if (running) api.chat.abort(running.runId).catch(() => {});
+        }
         dispatch({ type: 'SET_ACTIVE', id });
         if (stateRef.current.conversations[id]) return;
         dispatch({ type: 'SET_LOADING_CONV', loading: true });

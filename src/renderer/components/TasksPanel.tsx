@@ -112,6 +112,12 @@ export function TasksPanel() {
                             <span className="k">下次</span>
                             {task.enabled ? formatFuture(next) : '已停用'}
                           </span>
+                          {task.nextNote ? (
+                            <span className="m note" title={task.nextNote}>
+                              <span className="k">顺延</span>
+                              {task.nextNote}
+                            </span>
+                          ) : null}
                           <span className="m">
                             <span className="k">上次</span>
                             {task.lastRunAt ? formatRelative(task.lastRunAt) : '尚未执行'}

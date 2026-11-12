@@ -147,7 +147,7 @@ export class ChatService {
       if (usable(p)) {
         return {
           provider: p,
-          target: { providerId: p.id, baseUrl: p.baseUrl, apiKey: p.apiKey, model: override.model || p.models[0] || '', kind: p.kind },
+          target: { providerId: p.id, baseUrl: p.baseUrl, apiKey: p.apiKey, model: override.model || p.models[0] || '', kind: p.kind, label: p.name },
           reason: '使用指定模型',
         };
       }
@@ -174,7 +174,7 @@ export class ChatService {
     }
     return {
       provider: pick,
-      target: { providerId: pick.id, baseUrl: pick.baseUrl, apiKey: pick.apiKey, model, kind: pick.kind },
+      target: { providerId: pick.id, baseUrl: pick.baseUrl, apiKey: pick.apiKey, model, kind: pick.kind, label: pick.name },
       reason: settings.freeMode ? '免费优先模式' : '使用当前选中的服务商',
     };
   }
@@ -242,9 +242,7 @@ export class ChatService {
     conv: Conversation,
     controller: AbortController,
   ): Promise<{ text: string; conversationId: string }> {
-    const settings = this.effectiveSettings(this.ctx.settings(), req.overrides);
-    const thinkingVisible = settings.thinking.enabled;
-    const signal = controller.signal;
+    let ended = false;
     const citations: Citation[] = [];
     const emitRun = (event: RunEvent) => {
       if (event.type === 'run:citation') {
@@ -256,6 +254,15 @@ export class ChatService {
     };
     const notify = (level: 'info' | 'warn' | 'error', text: string) =>
       emitRun({ type: 'run:notice', runId, level, text });
+    const end = (status: 'done' | 'error' | 'aborted', messageId?: string, error?: string) => {
+      if (ended) return;
+      ended = true;
+      emitRun({ type: 'run:end', runId, status, messageId, error });
+    };
+    try {
+    const settings = this.effectiveSettings(this.ctx.settings(), req.overrides);
+    const thinkingVisible = settings.thinking.enabled;
+    const signal = controller.signal;
 
     // 手动指定优先：本次请求显式给了 agentId，或会话基线已是某个子 Agent，都不再覆盖用户选择。
     // 唯一例外是「总调度」——它本身就是路由器，选它等价于自动分派。
@@ -417,7 +424,7 @@ export class ChatService {
       conv.trace = [...(conv.trace ?? []), ...trace].slice(-200);
       const convUsage = this.ctx.store.saveConversation(conv).usage ?? { ...DEFAULT_USAGE };
       emitRun({ type: 'run:usage', runId, usage: { ...DEFAULT_USAGE }, conversationUsage: convUsage });
-      emitRun({ type: 'run:end', runId, status: signal.aborted ? 'aborted' : 'done', messageId: demoMsg.id });
+      end(signal.aborted ? 'aborted' : 'done', demoMsg.id);
       return { text: demoText, conversationId: conv.id };
     }
 
@@ -535,13 +542,7 @@ export class ChatService {
       conv.messages.push(failMsg);
       this.ctx.store.saveConversation(conv);
       if (!aborted) notify('error', message);
-      emitRun({
-        type: 'run:end',
-        runId,
-        status: aborted ? 'aborted' : 'error',
-        messageId: failMsg.id,
-        error: aborted ? undefined : message,
-      });
+      end(aborted ? 'aborted' : 'error', failMsg.id, aborted ? undefined : message);
       return { text: content, conversationId: conv.id };
     }
 
@@ -614,7 +615,7 @@ export class ChatService {
       notify('warn', `本对话累计成本约 ¥${(saved.usage?.costCny ?? 0).toFixed(2)}，已超过预算提醒线 ¥${budget}。`);
     }
 
-    emitRun({ type: 'run:end', runId, status: signal.aborted ? 'aborted' : 'done', messageId: assistant.id });
+    end(signal.aborted ? 'aborted' : 'done', assistant.id);
 
     /* ------------------------- 长期记忆抽取 ------------------------- */
     if (settings.memory.enabled && settings.memory.longTerm && settings.memory.autoExtract && !signal.aborted) {
@@ -624,6 +625,11 @@ export class ChatService {
     }
 
     return { text: content, conversationId: conv.id };
+    } catch (fatal) {
+      this.ctx.log.error('[chat] run 意外中断，已补发 run:end', fatal);
+      end('error');
+      return { text: '', conversationId: conv.id };
+    }
   }
 
   /** 用一次轻量调用抽取 0-3 条长期记忆 */

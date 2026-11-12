@@ -357,7 +357,10 @@ export class Store {
   private loadIndex(): void {
     const raw = readJsonRaw(this.paths.convIndexFile);
     if (Array.isArray(raw)) {
-      this.index = raw.filter((m): m is ConversationMeta => !!m && typeof (m as ConversationMeta).id === 'string');
+      const metas = raw.filter((m): m is ConversationMeta => !!m && typeof (m as ConversationMeta).id === 'string');
+      // 剔除指向已丢失文件的孤儿条目（异常退出后偶发），并写回干净索引
+      this.index = metas.filter((m) => fs.existsSync(this.convFile(m.id)));
+      if (this.index.length !== metas.length) this.persistIndex();
       return;
     }
     // 索引缺失时按目录重建，保证老数据可用
