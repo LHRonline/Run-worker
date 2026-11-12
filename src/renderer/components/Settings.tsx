@@ -234,7 +234,7 @@ export function Settings() {
         <span style={{ fontSize: 14 }}>⚙</span>
         <div>
           <div className="title">设置</div>
-          <div className="sub">Run worker 0.0.1 · 修改后需点击保存并应用</div>
+          <div className="sub">Run worker {__APP_VERSION__} · 修改后需点击保存并应用</div>
         </div>
         <span style={{ marginLeft: 'auto' }} />
         <button type="button" className="icon-btn" title="关闭设置" onClick={() => actions.openSettings(false)}>
@@ -946,7 +946,7 @@ export function Settings() {
                 <div className="update-box">
                   <div className="uh">
                     <span className="badge accent">当前版本</span>
-                    <span className="uv">v0.0.1</span>
+                    <span className="uv">v{app?.version ?? '—'}</span>
                     <span style={{ marginLeft: 'auto', fontSize: 10.5, color: 'var(--faint)' }}>
                       {updateInfo?.checkedAt ? `上次检查 ${formatDateTime(updateInfo.checkedAt)}` : '尚未检查更新'}
                     </span>
@@ -1047,7 +1047,7 @@ export function Settings() {
                   <img src="./icon.png" alt="Run worker" />
                   <div>
                     <div className="an">Run worker</div>
-                    <div className="av">v0.0.1 · MIT License</div>
+                    <div className="av">v{__APP_VERSION__} · MIT License</div>
                     <div className="ad">桌面端全能 Agent · 多智能体调度的万能系统助手</div>
                   </div>
                 </div>

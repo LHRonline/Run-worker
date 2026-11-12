@@ -560,7 +560,7 @@ class MockApi implements RunWorkerApi {
   app = {
     info: async (): Promise<AppInfo> => ({
       name: 'Run worker',
-      version: '0.0.1',
+      version: __APP_VERSION__,
       electron: '33.4.11',
       chrome: '130.0.6723.191',
       node: '20.18.1',
@@ -951,7 +951,7 @@ class MockApi implements RunWorkerApi {
       await new Promise((r) => setTimeout(r, 1100));
       const checkedAt = Date.now();
       return {
-        currentVersion: '0.0.1',
+        currentVersion: __APP_VERSION__,
         latestVersion: '0.1.0',
         available: true,
         prerelease: false,

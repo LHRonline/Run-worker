@@ -8,6 +8,7 @@
  * 单个服务器失败只把该服务器置为 error，绝不阻塞其它服务器或应用启动。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { app } from 'electron';
 import { EVT } from '../../shared/ipc';
 import type { McpManager, PlatformDeps } from '../../shared/platform';
 import type {
@@ -19,7 +20,14 @@ import type {
 
 const PROTOCOL_VERSION = '2024-11-05';
 const CLIENT_NAME = 'run-worker';
-const CLIENT_VERSION = '0.0.1';
+/** 客户端版本取自 package.json（app.getVersion()），与界面显示保持一致；惰性求值避免模块加载期依赖 electron */
+function clientVersion(): string {
+  try {
+    return app.getVersion();
+  } catch {
+    return '0.0.0';
+  }
+}
 const REQUEST_TIMEOUT_MS = 30_000;
 const STDERR_TAIL = 2000;
 
@@ -427,7 +435,7 @@ export function createMcpManager(deps: PlatformDeps): McpManager {
       await request(session, 'initialize', {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { roots: { listChanged: false }, sampling: {} },
-        clientInfo: { name: CLIENT_NAME, version: CLIENT_VERSION },
+        clientInfo: { name: CLIENT_NAME, version: clientVersion() },
       });
 
       await notify(session, 'notifications/initialized', {});

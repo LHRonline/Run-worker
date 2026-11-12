@@ -54,11 +54,31 @@ function getFetch(): FetchLike | null {
 }
 
 /** 解析版本号：v1.2.3-beta.1 → { nums:[1,2,3], pre:['beta',1] } */
-function parseVersion(raw: string): { nums: number[]; pre: (string | number)[] } | null {
+interface ParsedVersion {
+  nums: number[];
+  /** 字母后缀等级（热修复级别）：0.0.3 → 0，0.0.3a → 1，0.0.3b → 2 */
+  letter: number;
+  pre: (string | number)[];
+}
+
+/** 末段可能带字母后缀（0.0.3a），拆出数字部分与字母等级 */
+function parseVersion(raw: string): ParsedVersion | null {
   const text = String(raw ?? '').trim().replace(/^v/i, '');
   if (!text) return null;
   const [core, ...rest] = text.split('+')[0].split('-');
-  const nums = core.split('.').map((n) => Number.parseInt(n, 10));
+  const segments = core.split('.');
+  let letter = 0;
+  const last = segments[segments.length - 1] ?? '';
+  const letterMatch = /^(.*?)([a-z]+)$/i.exec(last);
+  if (letterMatch) {
+    // a=1 … z=26，aa=27（按 26 进制累加，可稳定排序 a < b < … < z < aa）
+    letter = letterMatch[2]
+      .toLowerCase()
+      .split('')
+      .reduce((acc, ch) => acc * 26 + (ch.charCodeAt(0) - 96), 0);
+    segments[segments.length - 1] = letterMatch[1] || '0';
+  }
+  const nums = segments.map((n) => Number.parseInt(n, 10));
   if (nums.length === 0 || nums.some((n) => Number.isNaN(n))) return null;
   const pre: (string | number)[] = [];
   if (rest.length > 0) {
@@ -67,11 +87,11 @@ function parseVersion(raw: string): { nums: number[]; pre: (string | number)[] }
       pre.push(Number.isNaN(num) ? part.toLowerCase() : num);
     }
   }
-  return { nums, pre };
+  return { nums, letter, pre };
 }
 
 /** semver 比较：a > b 返回 1，相等 0，小于 -1 */
-function compareVersion(a: string, b: string): number {
+export function compareVersion(a: string, b: string): number {
   const va = parseVersion(a);
   const vb = parseVersion(b);
   if (!va && !vb) return 0;
@@ -85,6 +105,9 @@ function compareVersion(a: string, b: string): number {
     if (na > nb) return 1;
     if (na < nb) return -1;
   }
+
+  // 字母后缀是「热修复级别」，高于同数字版本（0.0.3a > 0.0.3 > 0.0.2）
+  if (va.letter !== vb.letter) return va.letter > vb.letter ? 1 : -1;
 
   // 有预发布标识的版本更小
   if (va.pre.length === 0 && vb.pre.length > 0) return 1;

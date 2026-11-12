@@ -3,7 +3,7 @@
  */
 import type { AgentId, RunEvent, Settings, ToolCallRecord } from '../../shared/types';
 import { completeText, streamChat } from '../llm/client';
-import type { LlmMessage, LlmTarget, RawUsage } from '../llm/client';
+import type { LlmMessage, LlmTarget, RawUsage, LlmToolSchema } from '../llm/client';
 import { truncateMiddle } from '../tools/types';
 import type { ToolRuntime } from '../tools/types';
 import { toolRegistry } from '../tools';
@@ -189,11 +189,35 @@ function parseArgs(raw: string): Record<string, unknown> {
   }
 }
 
+/** OpenAI 兼容网关要求工具（function）名必须满足 ^[a-zA-Z0-9_-]+$，
+ *  而本应用的工具名带点号（如 python.exec / net.fetch），直接发送会被服务端拒绝：
+ *  「Invalid `tools[0].function.name`: string does not match pattern」。
+ *  发送前把工具名规整为合法字符；模型回传后再映射回真实工具名。 */
+export function sanitizeToolName(name: string): string {
+  return (name || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 /** 以指定 Agent 身份跑工具循环，直到模型不再请求工具或步数耗尽 */
 export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
   const registry = opts.registry ?? toolRegistry;
   const runtime = agentRuntime(opts.agent);
   const schemas = opts.toolsEnabled ? registry.schemas(runtime.tools) : [];
+  // 对外发送的工具名必须是合法字符；这里建立「合法名 → 真实名」映射，
+  // 模型回传的是合法名，真正执行前再换回真实工具名。
+  const nameMap = new Map<string, string>();
+  const usedNames = new Set<string>();
+  const safeSchemas: LlmToolSchema[] = schemas.map((s) => {
+    let safe = sanitizeToolName(s.function.name);
+    if (!safe) safe = 'tool';
+    if (usedNames.has(safe)) {
+      let i = 2;
+      while (usedNames.has(`${safe}_${i}`)) i += 1;
+      safe = `${safe}_${i}`;
+    }
+    usedNames.add(safe);
+    nameMap.set(safe, s.function.name);
+    return { ...s, function: { ...s.function, name: safe } };
+  });
   const messages = opts.messages;
   const collected: ToolCallRecord[] = [];
   const usages: RawUsage[] = [];
@@ -210,8 +234,8 @@ export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
     const res = await streamChat({
       target: opts.target,
       messages,
-      tools: schemas.length > 0 ? schemas : undefined,
-      toolChoice: schemas.length > 0 ? 'auto' : undefined,
+      tools: safeSchemas.length > 0 ? safeSchemas : undefined,
+      toolChoice: safeSchemas.length > 0 ? 'auto' : undefined,
       temperature: opts.temperature,
       maxTokens: opts.maxOutputTokens,
       signal: opts.signal,
@@ -243,16 +267,18 @@ export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
     });
 
     for (const call of res.toolCalls) {
+      // 模型回传的是规整后的合法名，这里换回真实工具名再执行
+      const realName = nameMap.get(call.name) ?? call.name;
       const args = parseArgs(call.arguments);
       const record: ToolCallRecord = {
         id: call.id,
-        name: call.name,
+        name: realName,
         args,
         status: 'running',
         startedAt: Date.now(),
       };
 
-      const signature = `${call.name}:${JSON.stringify(args)}`;
+      const signature = `${realName}:${JSON.stringify(args)}`;
       const hit = seen.get(signature) ?? 0;
       seen.set(signature, hit + 1);
 
@@ -283,10 +309,10 @@ export async function runAgentLoop(opts: LoopOptions): Promise<LoopResult> {
 
       if (!call.arguments.trim()) {
         // 部分模型会漏掉 arguments，按空对象继续放过
-        opts.deps.rt.log.warn('[orchestrator] 工具参数为空', call.name);
+        opts.deps.rt.log.warn('[orchestrator] 工具参数为空', realName);
       }
 
-      const result = await registry.execute(call.name, args, {
+      const result = await registry.execute(realName, args, {
         runId: opts.deps.runId,
         agentId: opts.agent,
         signal: opts.signal,

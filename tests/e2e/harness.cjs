@@ -301,6 +301,19 @@ async function main() {
       assert('update' in boot, 'bootstrap().update 字段缺失');
       return `mcp=${boot.mcp.length} tasks=${boot.tasks.length} kb=${boot.knowledge.length} memory=${boot.memory.length}`;
     });
+
+    await step('A7 界面标题栏版本号与 package.json 一致', 'src/renderer/components/TitleBar.tsx（版本号取自 app.getVersion()）', async () => {
+      const chip = await js(
+        win,
+        `(() => {
+           const el = document.querySelector('.version-chip');
+           return el ? String(el.textContent || '').trim() : '';
+         })()`,
+      );
+      assert(chip, '标题栏未渲染 .version-chip 版本标识');
+      assert(chip === pkg.version, `标题栏版本号=${chip}，期望 ${pkg.version}`);
+      return `titlebar version-chip=${chip}`;
+    });
   }
 
   /* ------------------------------ B. 设置读写与持久化 ------------------------------ */

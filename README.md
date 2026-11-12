@@ -4,7 +4,7 @@
 
 **一个真正能动手的桌面 Agent：多智能体调度 + 直接操作你的电脑 + MCP 连接器 + 本地知识库，并把 token 花在刀刃上。**
 
-![version](https://img.shields.io/badge/version-0.0.3-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4) ![electron](https://img.shields.io/badge/electron-33.4.11-47848f) ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
+![version](https://img.shields.io/badge/version-0.0.3a-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4) ![electron](https://img.shields.io/badge/electron-33.4.11-47848f) ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
 ---
 
@@ -13,7 +13,7 @@
 Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一句目标，它自己判断该由哪个子 Agent 接手、该调哪些工具，然后**真的去执行**——写文件、跑命令、出图、生成 3D 资产、剪辑视频、查你的本地资料库。
 它不绑定单一厂商：DeepSeek、OpenRouter 免费模型、Groq、硅基流动、Ollama 本地，任何兼容 OpenAI 协议的接口都能接。默认开启省 token 策略与中文思考流式展示，日常轻量任务可以做到零成本。
 
-> 当前版本 **0.0.3**，MIT 协议开源。不知道从哪开始？直接看下面的 [3 分钟上手](#3-分钟上手)，或进 [docs/INSTALL.md](docs/INSTALL.md) 看完整安装教程。
+> 当前版本 **0.0.3a**，MIT 协议开源。不知道从哪开始？直接看下面的 [3 分钟上手](#3-分钟上手)，或进 [docs/INSTALL.md](docs/INSTALL.md) 看完整安装教程。
 
 ---
 
@@ -52,7 +52,7 @@ Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一�
 
 ### 方式一：安装包（推荐）
 
-从 [Releases](https://github.com/LHRonline/run-worker/releases) 下载 `Run-worker-0.0.3-setup.exe`，双击运行。安装器为 **NSIS 非一键式**：
+从 [Releases](https://github.com/LHRonline/run-worker/releases) 下载 `Run-worker-0.0.3a-setup.exe`，双击运行。安装器为 **NSIS 非一键式**：
 
 - 可选安装目录（默认在用户目录下，不强制 `Program Files`），创建桌面与开始菜单快捷方式（名称 `Run worker`）
 - 不申请管理员权限（`requestedExecutionLevel: asInvoker`），仅写 `HKCU` 注册表

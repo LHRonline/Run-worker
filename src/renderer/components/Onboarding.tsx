@@ -118,7 +118,7 @@ export function Onboarding() {
         <div className="onb-logo">
           <img src="./icon.png" alt="Run worker" />
           <span className="name">Run worker</span>
-          <span className="tag">0.0.1</span>
+          <span className="tag">{__APP_VERSION__}</span>
           <span className="tag" style={{ marginLeft: 'auto' }}>
             MIT · 本地优先
           </span>

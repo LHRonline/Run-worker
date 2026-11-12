@@ -1,4 +1,5 @@
 import { api, hasNativeWindow } from '../lib/bridge';
+import { useStore } from '../state/store';
 
 function MinimizeIcon() {
   return (
@@ -25,12 +26,15 @@ function CloseIcon() {
 }
 
 export function TitleBar() {
+  // 版本号取自主进程 app.getVersion()，不再硬编码，避免与实际构建版本脱节
+  const { state } = useStore();
+  const version = state.app?.version ?? __APP_VERSION__;
   return (
     <header className="titlebar">
       <div className="brand">
         <img className="brand-mark" src="./icon.png" alt="Run worker 图标" />
         <span className="brand-name">Run worker</span>
-        <span className="version-chip">0.0.1</span>
+        {version ? <span className="version-chip">{version}</span> : null}
       </div>
       <div className="titlebar-drag">
         <span className="titlebar-hint">多智能体调度 · 直接操作电脑</span>

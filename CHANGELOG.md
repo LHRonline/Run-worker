@@ -19,6 +19,27 @@
 
 - （暂无）
 
+## [0.0.3a] - 2026-11-12
+
+> 补丁版：修复「工具名不符合服务端规范导致整轮请求被拒」的问题，并把界面版本号改为跟随实际构建版本。无破坏性变更，`settings.json` 结构不变（version 仍为 1），老数据无需迁移，可直接覆盖安装 0.0.3。
+
+### Fixed
+
+- **工具名不再被服务端拒绝（本次核心修复）**：本应用的工具名带点号（`python.exec` / `fs.list` / `net.fetch` / `mcp.call` 等），而 OpenAI 兼容网关要求 function 名必须匹配 `^[a-zA-Z0-9_-]+$`，导致整轮请求被拒：
+  `Invalid tools[0].function.name: string does not match pattern`。
+  现在发送前把工具名规整为合法字符（如 `python.exec` → `python_exec`），模型回传后再映射回真实工具名执行；界面与日志中展示的仍是真实工具名（如 `python.exec`），工具上下文与去重逻辑不受影响
+
+### Changed
+
+- **界面版本号跟随实际构建版本**：标题栏版本标识、设置 → 更新 → 当前版本、设置 → 关于、首次引导页不再硬编码版本号，统一取自主进程 `app.getVersion()`（渲染进程另有构建期注入的 `__APP_VERSION__` 兜底），彻底消除「界面显示 0.0.1、实际却是 0.0.3」这类脱节
+- **MCP 客户端版本号同步**：握手时上报的 clientInfo 版本改为取自 `package.json`，与界面显示一致
+- **补丁版本号可被正确识别为更新**：版本比较此前把 `0.0.3a` 与 `0.0.3` 视为相同，导致停留在 0.0.3 的用户收不到补丁更新提示；现在字母后缀按「热修复级别」排序（`0.0.3a` > `0.0.3` > `0.0.2`），预发布版本仍小于正式版
+
+### Tests
+
+- 平台集成用例 22 → 27：新增工具名规整函数、全部工具规整后合法且不重名、mock 网关按真实规则强校验的端到端工具循环（确认不再 400 且能执行真实工具）、补丁版本号比较（`0.0.3a` > `0.0.3`）、界面版本号不再硬编码
+- E2E 全链路回归 27 → 28（`ALL PASS (28/28)`）：新增 A7 标题栏版本号与 `package.json` 一致
+
 ## [0.0.3] - 2026-11-12
 
 > 稳定性修复：修复 0.0.1/0.0.2 中一批影响日常使用的已知问题。无破坏性变更，`settings.json` 结构不变（version 仍为 1），老数据无需迁移。
@@ -96,10 +117,13 @@
 - `0 9 31 * *` 这类表达式在无该日期的月份静默顺延到下一个有该日期的月份，界面无提示（0.0.3 修复）
 - 部分非标准 OpenAI 兼容服务的 `/v1/models` 结构差异会导致渠道测试误报（0.0.3 修复）
 - `denyPatterns` 对大小写与多空格变体的匹配不完整（0.0.2 已修复）
+- 工具名带点号不符合部分网关的 `^[a-zA-Z0-9_-]+$` 约束，导致请求被拒（0.0.3a 修复）
+- 界面版本号硬编码，与实际构建版本脱节（0.0.3a 修复）
 - Electron 33.4.11 在特定多屏缩放组合下可能出现白屏（后续版本修复）
 - 重复安装后 `PATH` 可能出现重复条目（后续版本修复）
 
-[Unreleased]: https://github.com/LHRonline/run-worker/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/LHRonline/run-worker/compare/v0.0.3a...HEAD
+[0.0.3a]: https://github.com/LHRonline/run-worker/compare/v0.0.3...v0.0.3a
 [0.0.3]: https://github.com/LHRonline/run-worker/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/LHRonline/run-worker/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/LHRonline/run-worker/releases/tag/v0.0.1
