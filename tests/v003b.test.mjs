@@ -297,13 +297,16 @@ test('精准 token：sumUsage 会区分精确 / 估算 / 混合', () => {
 
 /* ---------------- 5) 契约、人设、版本 ---------------- */
 
-test('0.0.3b：版本号、比较与更新内容', () => {
+test('0.0.3c：版本号、比较与更新内容', () => {
   const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.0.3b');
-  assert.equal(compareVersion('0.0.3b', '0.0.3a'), 1);
-  assert.equal(compareVersion('0.0.3a', '0.0.3b'), -1);
-  assert.ok(CURRENT_RELEASE_NOTES.sections.length >= 4, '应用内应展示分组更新内容');
-  assert.ok(CURRENT_RELEASE_NOTES.sections.some((s) => s.title.includes('彻底删除')));
+  assert.equal(pkg.version, '0.0.3c');
+  assert.equal(compareVersion('0.0.3c', '0.0.3b'), 1);
+  assert.equal(compareVersion('0.0.3b', '0.0.3c'), -1);
+  assert.ok(CURRENT_RELEASE_NOTES.sections.length >= 2, '应用内应展示分组更新内容');
+  assert.ok(
+    CURRENT_RELEASE_NOTES.sections.some((s) => s.title.includes('本次修复') || s.items.some((i) => i.includes('设置页'))),
+    '应用内更新内容应反映 0.0.3c 的弹窗遮挡修复',
+  );
   assert.ok(COMPOSER_SKILLS.length >= 6, '增强菜单的快捷技能应齐备');
   assert.ok(PERSONA_PRESET_META.length >= 4, '模式应齐备');
 });

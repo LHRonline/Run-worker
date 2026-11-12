@@ -821,6 +821,79 @@ async function main() {
     return `totalTokens=${assistant.usage.totalTokens} source=${assistant.usage.tokenSource}`;
   });
 
+  /* ------------------------------ I4. 设置页弹窗层级（0.0.3c 回归） ------------------------------ */
+  await step('I4 设置页内弹窗盖在最前、不被遮挡', 'src/renderer/styles/layout.css（.overlay 130 > .settings-overlay 120）', async () => {
+    const waitSel = async (sel, ms = 3000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        const found = await js(win, `!!document.querySelector(${JSON.stringify(sel)})`);
+        if (found) return true;
+        await sleep(120);
+      }
+      return false;
+    };
+
+    // 1) 打开设置页
+    const opened = await js(win, `(() => {
+      const btn = document.querySelector('.foot-btn[title="设置"]');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    assert(opened, '找不到设置入口按钮（.foot-btn[title="设置"]）');
+    assert(await waitSel('.settings-overlay'), '点击设置后未出现 .settings-overlay');
+
+    // 2) 切到「更新」分组（默认停在「通用」，本次更新按钮在更新分组里）
+    const switched = await js(win, `(() => {
+      const navs = Array.from(document.querySelectorAll('.settings-nav-btn'));
+      const b = navs.find((x) => (x.textContent || '').includes('更新'));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    assert(switched, '设置页内未找到「更新」分组入口');
+    await sleep(200);
+
+    // 3) 在更新分组里点击「查看本次更新内容」
+    const clicked = await js(win, `(() => {
+      const btns = Array.from(document.querySelectorAll('.settings-overlay button'));
+      const b = btns.find((x) => (x.textContent || '').includes('查看本次更新内容'));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    assert(clicked, '更新分组内未找到「查看本次更新内容」按钮');
+    assert(await waitSel('.overlay'), '点击后未出现模态弹窗 .overlay');
+
+    // 3) 关键断言：弹窗必须盖在设置页之上，屏幕中心命中最前元素应属于弹窗
+    const r = await js(win, `(() => {
+      const ov = document.querySelector('.overlay');
+      const settings = document.querySelector('.settings-overlay');
+      const zO = parseInt(getComputedStyle(ov).zIndex || '0', 10);
+      const zS = settings ? parseInt(getComputedStyle(settings).zIndex || '0', 10) : 0;
+      const cx = Math.floor(window.innerWidth / 2), cy = Math.floor(window.innerHeight / 2);
+      const top = document.elementFromPoint(cx, cy);
+      return {
+        zO, zS,
+        inOverlay: !!(top && top.closest && top.closest('.overlay')),
+        inSettings: !!(top && top.closest && top.closest('.settings-overlay')),
+        tag: top ? top.tagName : 'null',
+      };
+    })()`);
+    assert(r.zO > r.zS, `模态层级(${r.zO}) 未高于设置页(${r.zS})`);
+    assert(r.inOverlay && !r.inSettings, `弹窗被设置页遮挡：屏幕中心命中 ${r.tag}（应属于 .overlay）`);
+
+    // 4) 收尾：关弹窗、关设置，恢复环境
+    await js(win, `(() => {
+      const close = document.querySelector('.overlay .modal-close') || document.querySelector('.overlay');
+      if (close) close.click();
+      const sb = document.querySelector('.settings-overlay .icon-btn[title="关闭设置"]');
+      if (sb) sb.click();
+    })()`);
+    await waitSel('.overlay', 2000).then(() => {}); // 不强制等待消失
+    return `overlay z=${r.zO} > settings z=${r.zS}；屏幕中心命中属于弹窗`;
+  });
+
   /* ------------------------------ H. 渲染进程健康 ------------------------------ */
   await step('H1 无渲染崩溃 / 加载失败 / 非 CSP 的控制台错误', 'dist/renderer 控制台输出 / preload 注入', async () => {
     const fatal = rendererErrors.filter((e) => e.kind === 'preload-error' || e.kind === 'render-process-gone' || e.kind === 'did-fail-load');

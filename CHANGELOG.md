@@ -19,6 +19,15 @@
 
 - （暂无）
 
+## [0.0.3c] - 2026-11-12
+
+> 显示修复：修复设置页内弹窗（本次更新 / 确认框）被设置页遮挡、必须关闭设置才显示的问题，并统一模态层级、排查同类显示缺陷。无功能变更，可直接覆盖安装 0.0.3b。
+
+### Fixed
+- **设置页弹窗被遮挡**：设置页里点击「查看本次更新内容」打开的模态弹窗被全屏设置遮罩盖住，要关掉设置才看得到；已把模态层（`z-index: 130`）置于设置遮罩（`z-index: 120`）之上，弹窗现在直接盖在设置页最前
+- 统一所有模态层（本次更新、确认框、删除提示、MCP / 知识库 / 记忆面板里的确认弹窗等）的层级，确保从任意页面打开都显示在最前，不再出现「内容不在当前页弹出、离开页面才弹出」
+- 排查了同类「内容延迟到离开当前页才显示」的显示问题，确认无其它遗留
+
 ## [0.0.3b] - 2026-11-12
 
 > 功能补丁：彻底删除对话、Composer 增强菜单、精准 Token 计量、应用内一键升级、自我改进与更像人，并附带一轮全面的 Bug 修复与算法优化。无破坏性变更，`settings.json` 结构仍为 version 1（新增 `persona.humanize`，旧配置自动补默认值），老数据无需迁移，可直接覆盖安装 0.0.3a。
@@ -169,7 +178,8 @@
 - Electron 33.4.11 在特定多屏缩放组合下可能出现白屏（后续版本修复）
 - 重复安装后 `PATH` 可能出现重复条目（后续版本修复）
 
-[Unreleased]: https://github.com/LHRonline/run-worker/compare/v0.0.3b...HEAD
+[Unreleased]: https://github.com/LHRonline/run-worker/compare/v0.0.3c...HEAD
+[0.0.3c]: https://github.com/LHRonline/run-worker/compare/v0.0.3b...v0.0.3c
 [0.0.3b]: https://github.com/LHRonline/run-worker/compare/v0.0.3a...v0.0.3b
 [0.0.3a]: https://github.com/LHRonline/run-worker/compare/v0.0.3...v0.0.3a
 [0.0.3]: https://github.com/LHRonline/run-worker/compare/v0.0.2...v0.0.3
