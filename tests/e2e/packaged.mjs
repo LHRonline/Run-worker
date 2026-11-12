@@ -297,6 +297,12 @@ async function main() {
   /* B. 启动真实 exe */
   const port = await findFreePort(9333);
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'runworker-packaged-'));
+  // 跳过首次引导，直接进入主界面（否则 Onboarding 会盖住底部设置按钮，I1 步骤无法点击设置）
+  try {
+    fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ onboardingDone: true }));
+  } catch {
+    /* 忽略：种子文件缺失只会影响 I1，不影响前面的断言 */
+  }
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_NO_ATTACH_CONSOLE;
@@ -473,6 +479,51 @@ async function main() {
     assert(state.runworker === 'object', 'window.runworker 在 8s 后消失（preload 崩溃？）');
     return `ready=${state.ready} 正文 ${state.len} 字`;
   });
+
+  /* I. 0.0.3c 回归：设置页内点击「查看本次更新内容」弹窗必须盖在设置页之上 */
+  await step(
+    'I1 设置页内「查看本次更新内容」弹窗层级高于设置页（0.0.3c 回归）',
+    'src/renderer/styles/layout.css .overlay z-index 必须 > .settings-overlay',
+    async () => {
+      const result = await evaluate(
+        `(async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const q = (s) => document.querySelector(s);
+        const qa = (s) => [...document.querySelectorAll(s)];
+        const click = (el) => { if (el) el.click(); };
+        const setBtn = qa('.foot-btn').find((b) => (b.getAttribute('title') || '') === '设置') || qa('[title="设置"]')[0];
+        if (!setBtn) throw new Error('未找到设置按钮（可能仍在引导页）');
+        click(setBtn);
+        let tries = 0;
+        while (tries++ < 50 && !q('.settings-overlay')) await sleep(100);
+        if (!q('.settings-overlay')) throw new Error('设置页未打开');
+        const navBtns = qa('.settings-nav-btn');
+        const upd = navBtns.find((b) => (b.textContent || '').includes('更新'));
+        if (!upd) throw new Error('未找到「更新」分组按钮');
+        click(upd);
+        await sleep(250);
+        const link = qa('button, a').find((e) => (e.textContent || '').includes('查看本次更新内容'));
+        if (!link) throw new Error('未找到「查看本次更新内容」按钮');
+        click(link);
+        tries = 0;
+        while (tries++ < 50 && !q('.overlay')) await sleep(100);
+        const ov = q('.overlay');
+        if (!ov) throw new Error('点击后未出现 .overlay 弹窗（被设置页遮挡）');
+        const settings = q('.settings-overlay');
+        const zOv = parseInt(getComputedStyle(ov).zIndex || '0', 10);
+        const zSet = parseInt(getComputedStyle(settings).zIndex || '0', 10);
+        if (!(zOv > zSet)) throw new Error('弹窗 z-index(' + zOv + ') 未高于设置页(' + zSet + ')，仍会被遮挡');
+        const r = ov.getBoundingClientRect();
+        const cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+        const hit = document.elementFromPoint(cx, cy);
+        if (!ov.contains(hit)) throw new Error('屏幕中心命中元素不在弹窗内（被设置页遮挡），命中=' + (hit && (hit.className || hit.tagName)));
+        return 'overlay z=' + zOv + ' > settings z=' + zSet + '，中心命中属于弹窗';
+      })()`,
+        { awaitPromise: true, timeout: 25000 },
+      );
+      return result;
+    },
+  );
 
   clearTimeout(guard);
   const okBeforeExit = results.every((r) => r.ok);

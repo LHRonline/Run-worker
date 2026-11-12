@@ -538,8 +538,11 @@ export function createUpdater(deps: PlatformDeps & { appVersion: string; repoUrl
       return pushProgress({ stage: 'done', percent: 100, text: `安装包已下载：${dest}`, localPath: dest });
     }
     try {
-      // 独立进程、忽略 stdio；主程序随后退出，安装器才能覆盖被占用的文件
-      const child = spawn(dest, ['/S'], { detached: true, stdio: 'ignore', windowsHide: true });
+      // 独立进程、忽略 stdio；主程序随后退出，安装器才能覆盖被占用的文件。
+      // 关键：把 /D 指向“当前可执行文件所在目录”，确保就地升级而非回退到默认目录
+      // （否则装在非默认路径的用户点击「一键升级」会装出第二份 Run worker）。
+      const installDir = path.dirname(process.execPath);
+      const child = spawn(dest, ['/S', `/D="${installDir}"`], { detached: true, stdio: 'ignore', windowsHide: true });
       child.on('error', (err) => deps.log.warn('[updater] 启动安装器失败', err));
       child.unref();
     } catch (err) {

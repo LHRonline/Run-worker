@@ -6,9 +6,12 @@
 
 !include "LogicLib.nsh"
 
-; 广播 WM_SETTINGCHANGE，让资源管理器与新开终端立即读到新的环境变量
+; 广播 WM_SETTINGCHANGE，让资源管理器与新开终端立即读到新的环境变量。
+; 注意：必须用 PostMessageW（异步，立即返回）而非 SendMessageW（同步等待所有顶层窗口处理）。
+; 在静默安装 / 无桌面会话的 headless 环境下，SendMessageW(HWND_BROADCAST, ...) 会卡死，
+; 表现为「一键升级 / 静默安装」长时间无响应。PostMessageW 仅投递不等待，彻底避免该死锁。
 !macro RW_BROADCAST_ENV
-  System::Call 'user32::SendMessageW(i 0xffff, i 0x001A, i 0, w "Environment") i .r0'
+  System::Call 'user32::PostMessageW(i 0xffff, i 0x001A, i 0, w "Environment") i .r0'
 !macroend
 
 !macro customInstall
