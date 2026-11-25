@@ -58,7 +58,8 @@ const api: RunWorkerApi = {
   conversations: {
     list: () => ipcRenderer.invoke(IPC.convList),
     get: (id: string) => ipcRenderer.invoke(IPC.convGet, id),
-    create: (title?: string, workspaceId?: string) => ipcRenderer.invoke(IPC.convCreate, { title, workspaceId }),
+    create: (title?: string, workspaceId?: string, agentId?: string) =>
+      ipcRenderer.invoke(IPC.convCreate, { title, workspaceId, agentId }),
     move: (id: string, workspaceId: string | null) => ipcRenderer.invoke(IPC.convMove, { id, workspaceId }),
     rename: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
     remove: (id: string) => ipcRenderer.invoke(IPC.convRemove, id),
@@ -101,10 +102,10 @@ const api: RunWorkerApi = {
     stats: () => ipcRenderer.invoke(IPC.kbStats),
   },
   memory: {
-    list: () => ipcRenderer.invoke(IPC.memoryList),
-    add: (fact) => ipcRenderer.invoke(IPC.memoryAdd, fact),
-    forget: (id: string) => ipcRenderer.invoke(IPC.memoryForget, id),
-    clear: () => ipcRenderer.invoke(IPC.memoryClear),
+    list: (wsId?: string | null) => ipcRenderer.invoke(IPC.memoryList, wsId),
+    add: (fact, wsId?: string | null) => ipcRenderer.invoke(IPC.memoryAdd, fact, wsId),
+    forget: (id: string, wsId?: string | null) => ipcRenderer.invoke(IPC.memoryForget, id, wsId),
+    clear: (wsId?: string | null) => ipcRenderer.invoke(IPC.memoryClear, wsId),
   },
   update: {
     check: (force?: boolean) => ipcRenderer.invoke(IPC.updateCheck, force),

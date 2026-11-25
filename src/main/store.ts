@@ -352,8 +352,10 @@ export class Store {
     if (!dir) {
       if (!parentId) throw new Error('请先选择工作区文件夹。');
       const parent = this.getWorkspace(parentId)!;
-      // 用名字当真实子文件夹名，去掉 Windows 非法字符；这就是「套娃」的落盘位置
-      const safe = name.replace(/[\\/:*?"<>|]/g, '_').trim() || '子工作区';
+      // 用名字当真实子文件夹名，去掉 Windows 非法字符；这就是「套娃」的落盘位置。
+      // 还要挡住纯点号（. / .. / ...）：path.join 会把它们解析成父级之上，造成目录外溢。
+      const cleaned = name.replace(/[\\/:*?"<>|]/g, '_').trim();
+      const safe = /^\.+$/.test(cleaned) ? '子工作区' : cleaned || '子工作区';
       dir = path.join(parent.path, safe);
     }
     dir = path.resolve(dir);
@@ -564,7 +566,10 @@ export class Store {
   }
 
   createConversation(title?: string, agentId: AgentId = 'orchestrator', workspaceId?: string): Conversation {
-    const conv = createEmptyConversation(title, agentId, workspaceId);
+    // 绑定不存在的工作区 id 会让会话从侧栏彻底消失（顶部列表排除、又无树节点匹配）。
+    // 与 moveConversation 一样校验，失效 id 直接当作未绑定，避免产生看不见的孤儿会话。
+    const bound = workspaceId && this.getWorkspace(workspaceId) ? workspaceId : undefined;
+    const conv = createEmptyConversation(title, agentId, bound);
     this.saveConversation(conv);
     return conv;
   }
@@ -722,8 +727,12 @@ export class Store {
     return { files, failed };
   }
 
-  /** 清空全部会话：会话文件 + 索引 + 整个产物根目录（含旧版散落文件与 _shared） */
-  clearConversations(workspaceDir?: string): { files: number; artifacts: number; failed: string[] } {
+  /**
+   * 清空全部会话：会话文件 + 索引 + 产物根目录（含旧版散落文件与 _shared）。
+   * extraWorkspaceDirs 用于一并清理各工作区文件夹里的产物：会话文件是全局存放的，
+   * 但产物按会话绑定的工作区分散落盘，只清全局目录会留下孤儿文件。
+   */
+  clearConversations(workspaceDir?: string, extraWorkspaceDirs: string[] = []): { files: number; artifacts: number; failed: string[] } {
     const failed: string[] = [];
     let files = 0;
     let artifacts = 0;
@@ -741,18 +750,23 @@ export class Store {
       else failed.push(full);
     }
 
-    if (workspaceDir) {
-      const root = this.artifactsRoot(workspaceDir);
+    const dirs = new Set<string>();
+    if (workspaceDir) dirs.add(path.resolve(workspaceDir).toLowerCase());
+    for (const d of extraWorkspaceDirs) if (d) dirs.add(path.resolve(d).toLowerCase());
+    for (const dir of dirs) {
+      const root = this.artifactsRoot(dir);
       const before = this.countFiles(root);
       const ok = this.removePath(root);
       const left = this.countFiles(root);
-      artifacts = Math.max(0, before - left);
+      artifacts += Math.max(0, before - left);
       if (!ok && left > 0) failed.push(root);
     }
 
-    // 文件清完再落盘索引，避免出现「索引为空但文件还在」的永久孤儿
+    // 文件清完再落盘索引。删除失败的文件（Windows 上被占用很常见）对应的会话
+    // 必须留在索引里，否则 UI 提示「请关闭程序后重试」却已找不到该会话，成为永久孤儿。
+    // 以主文件是否还在磁盘上为准：删成功的移除，没删掉的保留。
     this.cache.clear();
-    this.index = [];
+    this.index = this.index.filter((m) => fs.existsSync(this.convFile(m.id)));
     this.persistIndex();
     return { files, artifacts, failed };
   }

@@ -2,7 +2,6 @@
  * Run worker — 对话服务：一次 run 的完整生命周期
  * 入参立即返回 runId，之后全部通过 EVT.run 流式推送，结束时落库。
  */
-import fs from 'node:fs';
 import type {
   AgentId,
   AgentTraceStep,
@@ -68,10 +67,17 @@ export class ChatService {
   /** 标记单个会话已删除；之后它在途 run 的所有写回都会被丢弃 */
   markDeleted(conversationId: string): void {
     this.deletedConversations.add(conversationId);
-    // 会话 id 单调递增，保留最近一批即可，避免长期运行无限增长
+    // 会话 id 单调递增，保留最近一批即可，避免长期运行无限增长。
+    // 裁剪时优先淘汰「没有在途 run」的 id：若把某个在途 run 的会话淘汰掉，
+    // 它结束时 isDeleted 变 false，落库会把刚清空的会话复活成幽灵条目。
     if (this.deletedConversations.size > 500) {
-      const first = this.deletedConversations.values().next().value;
-      if (first) this.deletedConversations.delete(first);
+      const inFlight = new Set([...this.runs.values()].map((r) => r.conversationId));
+      let victim: string | undefined;
+      for (const id of this.deletedConversations) {
+        if (!inFlight.has(id)) { victim = id; break; }
+      }
+      if (!victim) victim = this.deletedConversations.values().next().value;
+      if (victim) this.deletedConversations.delete(victim);
     }
   }
 
@@ -277,22 +283,14 @@ export class ChatService {
     };
   }
 
-  /** 会话绑定的工作区文件夹；没绑定或目录失效时回退全局工作目录 */
+  /** 会话绑定的工作区文件夹；没绑定或目录失效时回退全局工作目录。
+   *  与 context.workspaceDirForConversation 共用一套规则，保证产物写入与删除指向同一目录。 */
   private workspaceFor(conv: Conversation): string {
-    const ws = conv.workspaceId ? this.ctx.store.getWorkspace(conv.workspaceId) : null;
-    if (ws?.path) {
-      try {
-        fs.mkdirSync(ws.path, { recursive: true });
-        return ws.path;
-      } catch {
-        /* 目录不可用，回退 */
-      }
-    }
-    return this.ctx.workspace();
+    return this.ctx.workspaceDirForConversation(conv.id);
   }
 
-  private systemPrompt(settings: Settings, agent: AgentId, knowledge: string, workspaceDir: string): string {
-    const memoryDigest = settings.memory.enabled && settings.memory.longTerm ? this.ctx.memory.digest(1000) : '';
+  private systemPrompt(settings: Settings, agent: AgentId, knowledge: string, workspaceDir: string, workspaceId?: string | null): string {
+    const memoryDigest = settings.memory.enabled && settings.memory.longTerm ? this.ctx.memoryForWorkspace(workspaceId).digest(1000) : '';
     const base = buildSystemPrompt({
       persona: settings.persona,
       agent: agentDescriptor(agent),
@@ -572,7 +570,7 @@ export class ChatService {
 
     /* ---------------------------- 主循环 ---------------------------- */
     const workspaceDir = this.workspaceFor(conv);
-    const messages: LlmMessage[] = [{ role: 'system', content: this.systemPrompt(settings, agent, kbContext, workspaceDir) }, ...history];
+    const messages: LlmMessage[] = [{ role: 'system', content: this.systemPrompt(settings, agent, kbContext, workspaceDir, conv.workspaceId) }, ...history];
     const userParts = attachmentsToParts(req.attachments);
     messages.push(
       userParts.length > 0
@@ -774,7 +772,8 @@ export class ChatService {
       const kind = ['preference', 'fact', 'project', 'instruction'].includes(f.kind ?? '')
         ? (f.kind as 'preference' | 'fact' | 'project' | 'instruction')
         : 'fact';
-      this.ctx.memory.add({
+      const ms = conversationId ? this.ctx.memoryForConversation(conversationId) : this.ctx.memory;
+      ms.add({
         text: (f.text ?? '').trim().slice(0, 200),
         kind,
         weight: typeof f.weight === 'number' ? Math.min(1, Math.max(0, f.weight)) : 0.55,

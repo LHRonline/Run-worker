@@ -61,7 +61,10 @@ interface MockData {
   tasks: ScheduledTask[];
   taskRuns: TaskRun[];
   knowledge: KnowledgeSource[];
+  /** 全局/兜底记忆（未绑定工作区的范围），兼容旧版持久化结构 */
   memory: MemoryFact[];
+  /** 各工作区自己的记忆，key 为 workspaceId；与桌面端按文件夹隔离一致 */
+  memoryByWs: Record<string, MemoryFact[]>;
   mcp: McpServerConfig[];
   mcpStatus: Record<string, McpServerStatus>;
 }
@@ -176,6 +179,7 @@ function loadData(): MockData {
     taskRuns: [],
     knowledge: seedKnowledge(),
     memory: seedMemory(),
+    memoryByWs: {},
     mcp: mcpSeed.cfg,
     mcpStatus: mcpSeed.status,
   };
@@ -190,6 +194,7 @@ function loadData(): MockData {
       taskRuns: parsed.taskRuns ?? [],
       knowledge: parsed.knowledge ?? fallback.knowledge,
       memory: parsed.memory ?? fallback.memory,
+      memoryByWs: parsed.memoryByWs ?? {},
       mcp: parsed.mcp ?? fallback.mcp,
       mcpStatus: parsed.mcpStatus ?? fallback.mcpStatus,
     };
@@ -519,6 +524,13 @@ class MockApi implements RunWorkerApi {
     }
   }
 
+  /** 取当前范围的记忆数组引用：null/空 = 全局桶，否则该工作区自己的桶 */
+  private memoryBucket(wsId?: string | null): MemoryFact[] {
+    if (!wsId) return this.data.memory;
+    if (!this.data.memoryByWs[wsId]) this.data.memoryByWs[wsId] = [];
+    return this.data.memoryByWs[wsId];
+  }
+
   private emitRun(e: RunEvent): void {
     this.runListeners.forEach((cb) => cb(e));
   }
@@ -737,7 +749,7 @@ class MockApi implements RunWorkerApi {
       const c = this.data.conversations.find((x) => x.id === id);
       return c ? structuredClone(c) : null;
     },
-    create: async (title?: string, workspaceId?: string): Promise<Conversation> => {
+    create: async (title?: string, workspaceId?: string, agentId?: AgentId): Promise<Conversation> => {
       const now = Date.now();
       const conv: Conversation = {
         id: `conv-${now.toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
@@ -746,7 +758,7 @@ class MockApi implements RunWorkerApi {
         updatedAt: now,
         pinned: false,
         messageCount: 0,
-        agentId: 'orchestrator',
+        agentId: agentId ?? 'orchestrator',
         usage: emptyUsage(),
         preview: '',
         ...(workspaceId ? { workspaceId } : {}),
@@ -770,25 +782,36 @@ class MockApi implements RunWorkerApi {
     },
     remove: async (id: string): Promise<ConversationPurgeReport> => {
       const before = this.data.conversations.length;
-      const beforeMem = this.data.memory.length;
+      // 会话可能归属任意工作区，派生记忆散落在各桶，需跨全局 + 所有工作区清理
+      const countAll = () =>
+        this.data.memory.length + Object.values(this.data.memoryByWs).reduce((n, b) => n + b.length, 0);
+      const beforeMem = countAll();
       this.data.conversations = this.data.conversations.filter((c) => c.id !== id);
       this.data.memory = this.data.memory.filter((f) => !(f.source ?? '').includes(id));
+      for (const wsId of Object.keys(this.data.memoryByWs)) {
+        this.data.memoryByWs[wsId] = this.data.memoryByWs[wsId].filter((f) => !(f.source ?? '').includes(id));
+      }
       this.save();
       return {
         files: Math.max(0, before - this.data.conversations.length),
         artifacts: 0,
-        memories: beforeMem - this.data.memory.length,
+        memories: beforeMem - countAll(),
         runs: 0,
         failed: [],
       };
     },
     clear: async (): Promise<ConversationPurgeReport> => {
       const files = this.data.conversations.length;
-      const beforeMem = this.data.memory.length;
+      const countAll = () =>
+        this.data.memory.length + Object.values(this.data.memoryByWs).reduce((n, b) => n + b.length, 0);
+      const beforeMem = countAll();
       this.data.conversations = [];
-      this.data.memory = this.data.memory.filter((f) => !/^(auto|tool|feedback)(:|$)/.test(f.source ?? ''));
+      // 只清会话派生的记忆，手动添加的长期记忆保留（与桌面端 convClear 一致）
+      const keep = (b: MemoryFact[]) => b.filter((f) => !/^(auto|tool|feedback)(:|$)/.test(f.source ?? ''));
+      this.data.memory = keep(this.data.memory);
+      for (const wsId of Object.keys(this.data.memoryByWs)) this.data.memoryByWs[wsId] = keep(this.data.memoryByWs[wsId]);
       this.save();
-      return { files, artifacts: 0, memories: beforeMem - this.data.memory.length, runs: 0, failed: [] };
+      return { files, artifacts: 0, memories: beforeMem - countAll(), runs: 0, failed: [] };
     },
     pin: async (id: string, pinned: boolean): Promise<void> => {
       const c = this.data.conversations.find((x) => x.id === id);
@@ -1007,29 +1030,34 @@ class MockApi implements RunWorkerApi {
   };
 
   memory = {
-    list: async (): Promise<MemoryFact[]> => this.data.memory,
-    add: async (fact: Partial<MemoryFact> & { text: string }): Promise<MemoryFact[]> => {
+    list: async (wsId?: string | null): Promise<MemoryFact[]> => [...this.memoryBucket(wsId)],
+    add: async (fact: Partial<MemoryFact> & { text: string }, wsId?: string | null): Promise<MemoryFact[]> => {
       const now = Date.now();
-      this.data.memory.unshift({
-        id: `mem-${now.toString(36)}`,
+      const bucket = this.memoryBucket(wsId);
+      bucket.unshift({
+        id: `mem-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         kind: fact.kind ?? 'fact',
         text: fact.text,
         weight: fact.weight ?? 0.7,
         createdAt: now,
         updatedAt: now,
         hits: 0,
-        source: '手动添加',
+        source: fact.source ?? '手动添加',
       });
       this.save();
-      return this.data.memory;
+      return [...bucket];
     },
-    forget: async (id: string): Promise<MemoryFact[]> => {
-      this.data.memory = this.data.memory.filter((m) => m.id !== id);
+    forget: async (id: string, wsId?: string | null): Promise<MemoryFact[]> => {
+      const bucket = this.memoryBucket(wsId);
+      const kept = bucket.filter((m) => m.id !== id);
+      if (!wsId) this.data.memory = kept;
+      else this.data.memoryByWs[wsId] = kept;
       this.save();
-      return this.data.memory;
+      return [...kept];
     },
-    clear: async (): Promise<MemoryFact[]> => {
-      this.data.memory = [];
+    clear: async (wsId?: string | null): Promise<MemoryFact[]> => {
+      if (!wsId) this.data.memory = [];
+      else this.data.memoryByWs[wsId] = [];
       this.save();
       return [];
     },

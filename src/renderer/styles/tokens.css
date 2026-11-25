@@ -28,6 +28,8 @@
   --line: rgba(255, 255, 255, 0.07);
   --line-strong: rgba(255, 255, 255, 0.13);
   --grid-line: rgba(130, 165, 255, 0.055);
+  --scroll-thumb: rgba(139, 152, 173, 0.26);
+  --scroll-thumb-hover: rgba(139, 152, 173, 0.44);
 
   --text: #e6edf7;
   --text-2: #bcc8da;
@@ -48,6 +50,13 @@
   --radius: 12px;
   --radius-lg: 18px;
   --radius-xl: 24px;
+
+  /* 卡面高光与内描边：让深色面板有「受光」层次，而不是一整块纯色 */
+  --card-sheen: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --card-edge: rgba(255, 255, 255, 0.045);
+  --hairline: rgba(255, 255, 255, 0.05);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.24), 0 4px 14px rgba(0, 0, 0, 0.2);
+  --elev-2: 0 10px 30px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.22);
 
   --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.24);
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
@@ -75,6 +84,8 @@
   --line: rgba(15, 23, 42, 0.09);
   --line-strong: rgba(15, 23, 42, 0.16);
   --grid-line: rgba(37, 78, 160, 0.07);
+  --scroll-thumb: rgba(15, 23, 42, 0.16);
+  --scroll-thumb-hover: rgba(15, 23, 42, 0.28);
 
   --text: #0d1526;
   --text-2: #26344a;
@@ -97,4 +108,10 @@
   --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
   --shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
   --shadow-pop: 0 24px 60px rgba(15, 23, 42, 0.2);
+
+  --card-sheen: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --card-edge: rgba(15, 23, 42, 0.05);
+  --hairline: rgba(15, 23, 42, 0.055);
+  --elev-1: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.05);
+  --elev-2: 0 12px 28px rgba(15, 23, 42, 0.11), 0 2px 6px rgba(15, 23, 42, 0.06);
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { MemoryKind } from '@shared/types';
 import { formatRelative } from '../lib/format';
 import { useStore } from '../state/store';
@@ -17,6 +17,15 @@ export function MemoryPanel() {
   const [text, setText] = useState('');
   const [clearing, setClearing] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // 记忆按工作区隔离：切到不同工作区（或回到全局）时重新拉取对应范围的记忆
+  useEffect(() => {
+    void actions.refreshMemory();
+  }, [state.activeWorkspaceId, actions]);
+
+  const scopeName = state.activeWorkspaceId
+    ? state.workspaces.find((w) => w.id === state.activeWorkspaceId)?.name ?? '全局'
+    : '全局';
 
   const grouped = useMemo(() => {
     return KINDS.map((k) => ({
@@ -50,6 +59,10 @@ export function MemoryPanel() {
                 </p>
               </div>
               <div className="page-actions">
+                <span className="pill" title="当前记忆所属范围：活跃工作区或全局">
+                  <span className="status-dot ready" />
+                  范围：{scopeName}
+                </span>
                 <span className="pill">
                   <span className={`status-dot ${state.settings.memory.enabled ? 'ready' : 'stopped'}`} />
                   记忆{state.settings.memory.enabled ? '已开启' : '已关闭'}

@@ -11,6 +11,7 @@ import type { DeepPartial } from '../shared/ipc';
 import { AGENTS } from '../shared/agents';
 import { PROVIDER_PRESETS } from '../shared/presets';
 import type {
+  AgentId,
   Attachment,
   BootstrapPayload,
   ChatSendRequest,
@@ -223,8 +224,8 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
 
   handle(IPC.convGet, (id: string) => ctx.store.getConversation(id));
 
-  handle(IPC.convCreate, (payload?: { title?: string; workspaceId?: string }) =>
-    ctx.store.createConversation(payload?.title, 'orchestrator', payload?.workspaceId));
+  handle(IPC.convCreate, (payload?: { title?: string; workspaceId?: string; agentId?: AgentId }) =>
+    ctx.store.createConversation(payload?.title, payload?.agentId ?? 'orchestrator', payload?.workspaceId));
 
   handle(IPC.convMove, (payload: { id: string; workspaceId: string | null }) => {
     if (!payload?.id) throw new Error('缺少会话 id。');
@@ -258,13 +259,27 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
     // 1) 先中止在途 run 并打删除屏障：否则 execute 的落库/记忆抽取会把刚删掉的会话整体写回
     const runs = ctx.chat.abortByConversation(id);
     ctx.chat.markDeleted(id);
-    // 2) 该会话派生的长期记忆（自动抽取、工具写入、用户纠正）
-    const before = ctx.memory.list().length;
-    ctx.memory.forgetBySource([`auto:${id}`, `tool:${id}`, `feedback:${id}`]);
-    const memories = before - ctx.memory.list().length;
+    // 2) 该会话派生的长期记忆（自动抽取、工具写入、用户纠正）：跨全局 + 所有工作区兜底清理，
+    //    会话若被移动过，记忆可能落在任意 store，逐份 forget 才能清干净
+    const memories = ctx.forgetMemoryEverywhere([`auto:${id}`, `tool:${id}`, `feedback:${id}`]);
     // 3) 会话文件 + 索引 + 产物（含旧版散落文件）
+    //    必须在删除前解析目录：会话一旦删除就无法再查到它绑定的工作区。
+    //    会话若被移动过，产物可能散落在多个工作区，逐目录清理才不会留孤儿；
+    //    各目录的擦除计数与失败路径都要合并进报告。
+    const wsDir = ctx.workspaceDirForConversation(id);
     const conv = ctx.store.deleteConversation(id);
-    const artifacts = ctx.store.purgeConversationArtifacts(id, ctx.workspace());
+    const artifactReports = [ctx.store.purgeConversationArtifacts(id, wsDir)];
+    const seen = new Set([path.resolve(wsDir).toLowerCase()]);
+    for (const w of ctx.store.listWorkspaces()) {
+      const key = path.resolve(w.path).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      artifactReports.push(ctx.store.purgeConversationArtifacts(id, w.path));
+    }
+    const artifacts = {
+      files: artifactReports.reduce((n, r) => n + r.files, 0),
+      failed: artifactReports.flatMap((r) => r.failed),
+    };
     return {
       files: conv.files,
       artifacts: artifacts.files,
@@ -277,10 +292,16 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
   handle(IPC.convClear, () => {
     const runs = ctx.chat.abortAll();
     ctx.chat.markAllDeleted();
-    const before = ctx.memory.list().length;
-    ctx.memory.forgetBySource(['auto', 'tool', 'feedback']);
-    const memories = before - ctx.memory.list().length;
-    const conv = ctx.store.clearConversations(ctx.workspace());
+    // 清空全部对话：只清「由会话派生」的记忆（跨全局 + 所有工作区，逐会话前缀匹配），
+    // 手动添加的长期记忆不随对话删除而消失；否则工作区会话被删掉后，
+    // 它们派生在工作区里的记忆会残留成孤儿，并且「清空对话」会把整个工作区记忆一把删光。
+    // 必须在会话文件删除前拿到 id 列表。
+    const ids = ctx.store.listConversations().map((m) => m.id);
+    const sources = ids.flatMap((id) => [`auto:${id}`, `tool:${id}`, `feedback:${id}`]);
+    const memories = ctx.forgetMemoryEverywhere(sources);
+    // 产物按会话绑定的工作区分散落盘，把所有工作区目录都传进去，避免留孤儿文件
+    const wsDirs = ctx.store.listWorkspaces().map((w) => w.path);
+    const conv = ctx.store.clearConversations(ctx.workspace(), wsDirs);
     return {
       files: conv.files,
       artifacts: conv.artifacts,
@@ -292,7 +313,8 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
 
   handle(IPC.convFiles, (id: string) => {
     if (!id) throw new Error('缺少会话 id。');
-    return ctx.store.listConversationFiles(id, ctx.workspace());
+    // 产物按会话绑定的工作区目录落盘，引用时必须从同一目录取，否则工作区会话列不出自己的产物
+    return ctx.store.listConversationFiles(id, ctx.workspaceDirForConversation(id));
   });
 
   handle(IPC.convPin, (payload: { id: string; pinned: boolean }) => {
@@ -379,16 +401,18 @@ export function registerIpc(ctx: MainContext, opts: IpcOptions): void {
 
   /* ------------------------------ 记忆 ------------------------------ */
 
-  handle(IPC.memoryList, () => ctx.memory.list());
+  // 注意：handle 包装器已消费掉 event，这里第一个形参就是 invoke 传来的 wsId，
+  // 不要写成 (_e, wsId)，否则 wsId 恒为 undefined、工作区记忆读不出来。
+  handle(IPC.memoryList, (wsId?: string | null) => ctx.memoryForWorkspace(wsId).list());
 
-  handle(IPC.memoryAdd, (fact: Partial<MemoryFact> & { text: string }) => {
+  handle(IPC.memoryAdd, (fact: Partial<MemoryFact> & { text: string }, wsId?: string | null) => {
     if (!fact?.text?.trim()) throw new Error('记忆内容不能为空。');
-    return ctx.memory.add(fact);
+    return ctx.memoryForWorkspace(wsId).add(fact);
   });
 
-  handle(IPC.memoryForget, (id: string) => ctx.memory.forget(id));
+  handle(IPC.memoryForget, (id: string, wsId?: string | null) => ctx.memoryForWorkspace(wsId).forget(id));
 
-  handle(IPC.memoryClear, () => ctx.memory.clear());
+  handle(IPC.memoryClear, (wsId?: string | null) => ctx.memoryForWorkspace(wsId).clear());
 
   /* ------------------------------ 更新 ------------------------------ */
 

@@ -574,6 +574,52 @@ async function main() {
     },
   );
 
+  /* I. 0.0.3d 回归：记忆 IPC 按工作区范围隔离，读写清不会串到全局 */
+  await step(
+    'I3 记忆按工作区隔离：add/list/clear/forget 只作用于目标范围（0.0.3d 回归）',
+    'src/main/ipc.ts memoryList/memoryClear 形参不得带 _e；memoryForWorkspace(wsId) 按范围路由',
+    async () => {
+      const result = await evaluate(
+        `(async () => {
+        const api = window.runworker;
+        if (!api || !api.memory) throw new Error('preload 未暴露 memory API');
+        const WS = 'ws-e2e';
+        // 先保证两个范围都是干净起点
+        await api.memory.clear(WS);
+        await api.memory.clear(null);
+        const added = await api.memory.add({ text: 'E2E 工作区专属记忆', kind: 'fact' }, WS);
+        if (added.length !== 1 || added[0].text !== 'E2E 工作区专属记忆') {
+          throw new Error('add(wsId) 返回值不对：' + JSON.stringify(added));
+        }
+        // 关键：list(wsId) 必须能读到，list(null) 必须读不到（P0 形参错位时这里会失败）
+        const scoped = await api.memory.list(WS);
+        if (scoped.length !== 1) throw new Error('list(wsId) 读不到工作区记忆，疑似形参错位退回全局');
+        const globalBefore = await api.memory.list(null);
+        if (globalBefore.length !== 0) throw new Error('工作区记忆串到了全局范围');
+        // 全局放一条，验证 clear(wsId) 不误删全局
+        await api.memory.add({ text: 'E2E 全局记忆', kind: 'fact' }, null);
+        const cleared = await api.memory.clear(WS);
+        if (cleared.length !== 0) throw new Error('clear(wsId) 返回值不是目标范围的空表');
+        const globalAfter = await api.memory.list(null);
+        if (globalAfter.length !== 1 || globalAfter[0].text !== 'E2E 全局记忆') {
+          throw new Error('clear(wsId) 误删了全局记忆');
+        }
+        // forget 也按范围：全局这条只能从全局删掉
+        const g = globalAfter[0];
+        const inWs = await api.memory.forget(g.id, WS);
+        if (inWs.length !== 0) throw new Error('forget(wsId) 应只作用于工作区范围');
+        const stillGlobal = await api.memory.list(null);
+        if (stillGlobal.length !== 1) throw new Error('从工作区 forget 却删掉了全局记忆');
+        const gone = await api.memory.forget(g.id, null);
+        if (gone.length !== 0) throw new Error('forget(null) 未清掉全局记忆');
+        return 'add/list/clear/forget 四操作均按范围隔离，全局记忆未被误删';
+      })()`,
+        { awaitPromise: true, timeout: 20000 },
+      );
+      return result;
+    },
+  );
+
   clearTimeout(guard);
   const okBeforeExit = results.every((r) => r.ok);
 

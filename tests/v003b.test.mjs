@@ -297,15 +297,18 @@ test('精准 token：sumUsage 会区分精确 / 估算 / 混合', () => {
 
 /* ---------------- 5) 契约、人设、版本 ---------------- */
 
-test('0.0.3c：版本号、比较与更新内容', () => {
+test('版本号、比较与应用内更新内容', () => {
   const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.0.3c');
+  // 不再硬编码具体版本：升版本时测试无需跟着改，只约束格式与「不低于当前基线」
+  assert.match(pkg.version, /^\d+\.\d+\.\d+[a-z]?$/, `版本格式异常：${pkg.version}`);
+  assert.ok(compareVersion(pkg.version, '0.0.3c') >= 0, '当前版本不应低于 0.0.3c');
   assert.equal(compareVersion('0.0.3c', '0.0.3b'), 1);
   assert.equal(compareVersion('0.0.3b', '0.0.3c'), -1);
+  assert.equal(compareVersion('0.0.3d', '0.0.3c'), 1, '字母后缀应可稳定比较');
   assert.ok(CURRENT_RELEASE_NOTES.sections.length >= 2, '应用内应展示分组更新内容');
   assert.ok(
-    CURRENT_RELEASE_NOTES.sections.some((s) => s.title.includes('本次修复') || s.items.some((i) => i.includes('设置页'))),
-    '应用内更新内容应反映 0.0.3c 的弹窗遮挡修复',
+    CURRENT_RELEASE_NOTES.sections.some((s) => s.title.includes('本次修复') || s.items.some((i) => i.includes('工作区'))),
+    '应用内更新内容应反映最近一轮的修复',
   );
   assert.ok(COMPOSER_SKILLS.length >= 6, '增强菜单的快捷技能应齐备');
   assert.ok(PERSONA_PRESET_META.length >= 4, '模式应齐备');

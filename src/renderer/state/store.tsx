@@ -197,7 +197,8 @@ function syncMeta(metas: ConversationMeta[], conv: Conversation): ConversationMe
   return [...next].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
 }
 
-function resolveRun(state: AppState, runId: string, conversationId?: string): { info?: RunInfo; convId?: string; messageId?: string } {
+/** 解析 run 归属的会话与占位消息；导出供回归测试直接验证并发场景 */
+export function resolveRun(state: AppState, runId: string, conversationId?: string): { info?: RunInfo; convId?: string; messageId?: string } {
   const info = state.runs[runId];
   if (info) return { info, convId: info.conversationId, messageId: info.messageId };
   // SET_RUN 可能晚于首批 SSE 事件到达，此时才回退到 streaming 占位消息。
@@ -453,7 +454,13 @@ function reducer(state: AppState, action: Action): AppState {
       const conversations = { ...state.conversations };
       for (const meta of action.metas) {
         const existing = conversations[meta.id];
-        if (existing) conversations[meta.id] = { ...existing, ...meta };
+        if (!existing) continue;
+        const merged: Conversation = { ...existing, ...meta };
+        // 主进程解绑工作区后返回的 meta 不带 workspaceId；展开合并会保留会话对象里的旧值，
+        // 之后任何 syncMeta 都会把它写回 metas，导致会话从侧栏彻底消失。
+        // meta 里没有这个键就说明已解绑，必须一并删掉。
+        if (!('workspaceId' in meta)) delete merged.workspaceId;
+        conversations[meta.id] = merged;
       }
       return { ...state, metas: action.metas, conversations: { ...conversations, ...(action.conversations ?? {}) } };
     }
@@ -527,7 +534,9 @@ function reducer(state: AppState, action: Action): AppState {
     case 'SET_WORKSPACES':
       return { ...state, workspaces: action.workspaces };
     case 'SET_ACTIVE_WORKSPACE':
-      return { ...state, activeWorkspaceId: action.id };
+      // 切范围时先清空记忆，避免旧范围的条目顶着新范围的标题短暂显示；
+      // 真正的列表由 MemoryPanel 的 refreshMemory 异步拉回
+      return { ...state, activeWorkspaceId: action.id, memory: [] };
     default:
       return state;
   }
@@ -573,6 +582,8 @@ export interface StoreActions {
   addMemory(text: string, kind: MemoryFact['kind']): Promise<void>;
   forgetMemory(id: string): Promise<void>;
   clearMemory(): Promise<void>;
+  /** 按当前范围（活跃工作区或全局）重新拉取记忆列表 */
+  refreshMemory(): Promise<void>;
   addMcp(cfg: Parameters<typeof api.mcp.add>[0]): Promise<void>;
   removeMcp(id: string): Promise<void>;
   toggleMcp(id: string, enabled: boolean): Promise<void>;
@@ -608,6 +619,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const stateRef = useRef(state);
   stateRef.current = state;
+  /** 记忆拉取序号：快速切换工作区时只允许最后一次请求写回，避免旧范围的记忆覆盖新范围 */
+  const memoryReqRef = useRef(0);
+  /** 正在发送中的会话 id（同步锁）：SET_RUN 要等 IPC 返回才 dispatch，
+   *  这中间的空窗里 runs 还没有记录，连点会漏过守卫。用 ref 在 await 前同步占位。 */
+  const sendingRef = useRef<Set<string>>(new Set());
 
   /* 首次加载：拉取引导数据 + 读取本地界面偏好 */
   useEffect(() => {
@@ -643,9 +659,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       api.events.onRun((event) => {
         dispatch({ type: 'RUN_EVENT', event });
         if (event.type === 'run:end') {
-          // 定时任务/后台 run 的消息落在主进程，已打开的会话要重新读一次正文
-          const convId = stateRef.current.runs[event.runId]?.conversationId;
-          if (convId && stateRef.current.conversations[convId]) {
+          // 只有「本地没有占位消息的后台 run」才需要从主进程重读正文。
+          // 前台 run 的正文已由流式事件在本地逐字构建，主进程落库时用的是另一套
+          // assistant id（msg_...）；若整份 LOAD_CONV 替换，会换掉消息 id：
+          // runs[].messageId 失配 → 路由标签/耗时/思考计时消失，且整列按新 key 重挂载，
+          // 用户展开的参数/思考面板会被收起。这与 reducer 里「保持本地消息 id 不变」的
+          // 注释相矛盾，故这里跳过前台 run，只让后台 run 重载。
+          const runInfo = stateRef.current.runs[event.runId];
+          const convId = runInfo?.conversationId;
+          const localConv = convId ? stateRef.current.conversations[convId] : null;
+          const hasLocalPlaceholder = !!(
+            localConv && runInfo?.messageId &&
+            localConv.messages.some((m) => m.id === runInfo.messageId)
+          );
+          if (!hasLocalPlaceholder && convId && localConv) {
             api.conversations
               .get(convId)
               .then((conv) => {
@@ -702,6 +729,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const toast = (kind: ToastPayload['kind'], text: string): void => {
       dispatch({ type: 'TOAST_ADD', toast: { id: uid('toast'), kind, text } });
     };
+    /** 按当前范围重拉记忆，带序号守卫：切范围/并发写时只允许最后一次结果落库 */
+    const refreshMemoryScoped = async (): Promise<void> => {
+      const req = ++memoryReqRef.current;
+      const wsId = stateRef.current.activeWorkspaceId;
+      const facts = await api.memory.list(wsId);
+      if (req !== memoryReqRef.current || wsId !== stateRef.current.activeWorkspaceId) return;
+      dispatch({ type: 'SET_MEMORY', facts });
+    };
 
     return {
       setView: (view) => dispatch({ type: 'SET_VIEW', view }),
@@ -714,23 +749,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       dismissToast: (id) => dispatch({ type: 'TOAST_REMOVE', id }),
 
       selectConversation: async (id) => {
-        const prev = stateRef.current;
-        if (prev.activeId && prev.activeId !== id) {
-          const running = Object.values(prev.runs).find((r) => r.status === 'running' && r.conversationId === prev.activeId);
-          if (running) {
-            api.chat.abort(running.runId).catch(() => {});
-            // 乐观回滚：主进程的 run:end 可能延迟或丢失，不能让输入框一直锁在「停止」
-            dispatch({ type: 'END_RUN', runId: running.runId, status: 'aborted' });
-            if (running.messageId) {
-              dispatch({
-                type: 'PATCH_MESSAGE',
-                convId: running.conversationId,
-                messageId: running.messageId,
-                patch: { status: 'aborted' },
-              });
-            }
-          }
-        }
+        // 切换会话不再中止在途 run：主进程 run 是后台执行的，切走看别的对话不该
+        // 把正在生成的长回复杀掉。run 完成后仍会通过 run:end 落库、重载正文，
+        // 用户切回来能看到完整结果。
         dispatch({ type: 'SET_ACTIVE', id });
         if (stateRef.current.conversations[id]) return;
         dispatch({ type: 'SET_LOADING_CONV', loading: true });
@@ -747,7 +768,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       newConversation: async (agentId, title, workspaceId) => {
         try {
           const bind = workspaceId ?? stateRef.current.activeWorkspaceId ?? undefined;
-          const conv = await api.conversations.create(title, bind);
+          // agentId 必须随 create 一起落库，否则从 Agent 广场建的对话重启后会退回 orchestrator
+          const conv = await api.conversations.create(title, bind, agentId ?? undefined);
           const next = agentId ? { ...conv, agentId } : conv;
           dispatch({ type: 'UPSERT_CONV', conversation: next });
           if (agentId) {
@@ -785,10 +807,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       removeWorkspace: async (id) => {
         try {
           const workspaces = await api.workspaces.remove(id);
+          const currentWs = stateRef.current.activeWorkspaceId;
+          // 主进程会级联移除子工作区；若活跃的是某个子工作区，它虽不等于被点的 id
+          // 却同样已被删除。只判断相等会让活跃 id 悬挂到死工作区，之后新建的对话
+          // 绑定到不存在的 id，在侧栏完全看不到。以返回的清单为准对账。
+          if (currentWs && !workspaces.some((w) => w.id === currentWs)) {
+            dispatch({ type: 'SET_ACTIVE_WORKSPACE', id: null });
+          }
           dispatch({ type: 'SET_WORKSPACES', workspaces });
+          // 被解绑的会话若已加载进 state.conversations，仍带着旧 workspaceId；
+          // 后续 syncMeta 会把它写回 metas 导致会话从侧栏消失。逐个重载清掉。
+          const staleIds = Object.values(stateRef.current.conversations)
+            .filter((c) => c?.workspaceId && !workspaces.some((w) => w.id === c.workspaceId))
+            .map((c) => c.id);
           const metas = await api.conversations.list();
           dispatch({ type: 'SET_METAS', metas });
-          if (stateRef.current.activeWorkspaceId === id) dispatch({ type: 'SET_ACTIVE_WORKSPACE', id: null });
+          for (const convId of staleIds) {
+            api.conversations
+              .get(convId)
+              .then((conv) => {
+                if (conv) dispatch({ type: 'LOAD_CONV', conversation: conv });
+              })
+              .catch(() => undefined);
+          }
           toast('success', '工作区已移除，文件夹本身保留在磁盘上');
         } catch (err) {
           toast('error', `移除工作区失败：${err instanceof Error ? err.message : String(err)}`);
@@ -835,15 +876,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           for (const r of running) api.chat.abort(r.runId).catch(() => {});
           const report = await api.conversations.remove(id);
           dispatch({ type: 'REMOVE_CONV', id });
+          // 以主进程实际索引为准：文件被占用删不掉时索引会保留该会话，
+          // 界面必须把它留在列表里，否则提示「请重试」却已无从点起。
+          const metas = await api.conversations.list();
+          dispatch({ type: 'SET_METAS', metas });
+          // 后端已擦除该会话派生的记忆，记忆徽标/列表要同步，否则与「已擦除 N 条」自相矛盾
+          void refreshMemoryScoped();
           const parts: string[] = [];
           if (report?.files) parts.push(`${report.files} 个会话文件`);
           if (report?.artifacts) parts.push(`${report.artifacts} 个产物文件`);
           if (report?.memories) parts.push(`${report.memories} 条派生记忆`);
           if (report?.runs) parts.push(`${report.runs} 个在途任务`);
           const detail = parts.length ? `（已擦除 ${parts.join('、')}）` : '';
-          toast('success', `对话已彻底删除${detail}`);
           if (report?.failed?.length) {
-            toast('warn', `有 ${report.failed.length} 个文件被占用未能删除，请关闭相关程序后重试。`);
+            toast('warn', `删除未完成：${report.failed.length} 个文件被占用，请关闭相关程序后在列表里再删一次。`);
+          } else {
+            toast('success', `对话已彻底删除${detail}`);
           }
         } catch (err) {
           toast('error', `删除失败：${err instanceof Error ? err.message : String(err)}`);
@@ -854,14 +902,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           const report = await api.conversations.clear();
           dispatch({ type: 'CLEAR_CONVS' });
+          // 同上：删不掉的文件对应的会话仍在主进程索引里，重新拉回来，避免列表与磁盘脱节
+          const metas = await api.conversations.list();
+          dispatch({ type: 'SET_METAS', metas });
+          void refreshMemoryScoped();
           const parts: string[] = [];
           if (report?.files) parts.push(`${report.files} 个会话文件`);
           if (report?.artifacts) parts.push(`${report.artifacts} 个产物文件`);
           if (report?.memories) parts.push(`${report.memories} 条派生记忆`);
           if (report?.runs) parts.push(`${report.runs} 个在途任务`);
-          toast('success', `全部对话已彻底清空${parts.length ? `（${parts.join('、')}）` : ''}`);
           if (report?.failed?.length) {
-            toast('warn', `有 ${report.failed.length} 个文件被占用未能删除，请关闭相关程序后重试。`);
+            toast('warn', `清空未完成：${report.failed.length} 个文件被占用，请关闭相关程序后再试。`);
+          } else {
+            toast('success', `全部对话已彻底清空${parts.length ? `（${parts.join('、')}）` : ''}`);
           }
         } catch (err) {
           toast('error', `清空失败：${err instanceof Error ? err.message : String(err)}`);
@@ -873,14 +926,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (!clean) return;
         try {
           // 纠正写成「要求」类强指令，并在系统提示里获得最高优先级；
-          // 带会话来源，彻底删除该对话时会一并清掉。
-          const facts = await api.memory.add({
-            text: clean,
-            kind: 'instruction',
-            weight: 0.9,
-            source: `feedback:${conversationId}`,
-          });
-          dispatch({ type: 'SET_MEMORY', facts });
+          // 写到该对话所属工作区的记忆（未绑工作区则写入全局），带会话来源，
+          // 彻底删除该对话时会一并清掉。
+          const conv = stateRef.current.metas.find((m) => m.id === conversationId);
+          const targetWs = conv?.workspaceId ?? null;
+          const displayWs = stateRef.current.activeWorkspaceId;
+          const req = ++memoryReqRef.current;
+          const facts = await api.memory.add(
+            {
+              text: clean,
+              kind: 'instruction',
+              weight: 0.9,
+              source: `feedback:${conversationId}`,
+            },
+            targetWs,
+          );
+          // 期间切换了范围就让后续刷新接管，避免旧结果覆盖新范围
+          if (req !== memoryReqRef.current || displayWs !== stateRef.current.activeWorkspaceId) {
+            toast('success', '已记住这条纠正，之后的回复会按它执行');
+            return;
+          }
+          // 写入范围是「会话所属工作区」，可能与面板当前显示的范围不同。
+          // 只有两者一致时才能直接用返回的全表刷新；否则按当前范围重拉，
+          // 避免把别的范围的记忆覆盖到面板上。
+          if (targetWs === displayWs) dispatch({ type: 'SET_MEMORY', facts });
+          else void refreshMemoryScoped();
           toast('success', '已记住这条纠正，之后的回复会按它执行');
         } catch (err) {
           toast('error', `保存纠正失败：${err instanceof Error ? err.message : String(err)}`);
@@ -891,21 +961,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const clean = text.trim();
         if (!clean) return;
         const snapshot = stateRef.current;
-        // store 层统一守卫：Composer 的组件级 running 挡不住建议卡/重试等入口的连点
-        if (Object.values(snapshot.runs).some((r) => r.status === 'running' && r.conversationId === snapshot.activeId)) {
+        // store 层统一守卫：Composer 的组件级 running 挡不住建议卡/重试等入口的连点。
+        // 但 runs 要等 IPC 返回才 dispatch，存在空窗；用同步 ref 锁覆盖它。
+        const lockKey = snapshot.activeId ?? '__new__';
+        if (
+          sendingRef.current.has(lockKey) ||
+          Object.values(snapshot.runs).some((r) => r.status === 'running' && r.conversationId === snapshot.activeId)
+        ) {
           toast('warn', '当前对话正在执行，请等待完成或点击停止');
           return;
         }
+        sendingRef.current.add(lockKey);
         let convId = snapshot.activeId;
-        if (!convId || !snapshot.conversations[convId]) {
-          try {
+        try {
+          if (!convId || !snapshot.conversations[convId]) {
             const conv = await api.conversations.create(shortTitle(clean), stateRef.current.activeWorkspaceId ?? undefined);
             dispatch({ type: 'UPSERT_CONV', conversation: conv });
             convId = conv.id;
-          } catch (err) {
-            toast('error', `新建对话失败：${err instanceof Error ? err.message : String(err)}`);
-            return;
           }
+        } catch (err) {
+          sendingRef.current.delete(lockKey);
+          toast('error', `新建对话失败：${err instanceof Error ? err.message : String(err)}`);
+          return;
         }
         const now = Date.now();
         const snapshotConv = stateRef.current.conversations[convId];
@@ -953,7 +1030,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               status: 'running',
             },
           });
+          // SET_RUN 已落库，runs 守卫接管；同步锁可以释放
+          sendingRef.current.delete(lockKey);
         } catch (err) {
+          sendingRef.current.delete(lockKey);
           dispatch({
             type: 'PATCH_MESSAGE',
             convId,
@@ -1079,20 +1159,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       searchKnowledge: (query) => api.knowledge.search(query, 6).catch(() => []),
 
       addMemory: async (text, kind) => {
-        const facts = await api.memory.add({ text, kind, weight: 0.7 });
+        const wsId = stateRef.current.activeWorkspaceId;
+        const facts = await api.memory.add({ text, kind, weight: 0.7 }, wsId);
+        if (wsId !== stateRef.current.activeWorkspaceId) return;
         dispatch({ type: 'SET_MEMORY', facts });
         toast('success', '已加入长期记忆');
       },
       forgetMemory: async (id) => {
-        const facts = await api.memory.forget(id);
+        const wsId = stateRef.current.activeWorkspaceId;
+        const facts = await api.memory.forget(id, wsId);
+        if (wsId !== stateRef.current.activeWorkspaceId) return;
         dispatch({ type: 'SET_MEMORY', facts });
         toast('info', '记忆已删除');
       },
       clearMemory: async () => {
-        const facts = await api.memory.clear();
+        const wsId = stateRef.current.activeWorkspaceId;
+        const facts = await api.memory.clear(wsId);
+        if (wsId !== stateRef.current.activeWorkspaceId) return;
         dispatch({ type: 'SET_MEMORY', facts });
         toast('success', '长期记忆已清空');
       },
+      refreshMemory: refreshMemoryScoped,
 
       addMcp: async (cfg) => {
         const servers = await api.mcp.add(cfg);

@@ -4,6 +4,7 @@
  */
 import type {
   AgentDescriptor,
+  AgentId,
   AppInfo,
   ApprovalRequest,
   Attachment,
@@ -154,7 +155,7 @@ export interface RunWorkerApi {
   conversations: {
     list(): Promise<ConversationMeta[]>;
     get(id: string): Promise<Conversation | null>;
-    create(title?: string, workspaceId?: string): Promise<Conversation>;
+    create(title?: string, workspaceId?: string, agentId?: AgentId): Promise<Conversation>;
     /** workspaceId 传 null 表示移出工作区 */
     move(id: string, workspaceId: string | null): Promise<void>;
     rename(id: string, title: string): Promise<void>;
@@ -202,10 +203,11 @@ export interface RunWorkerApi {
     stats(): Promise<KnowledgeStats>;
   };
   memory: {
-    list(): Promise<MemoryFact[]>;
-    add(fact: Partial<MemoryFact> & { text: string }): Promise<MemoryFact[]>;
-    forget(id: string): Promise<MemoryFact[]>;
-    clear(): Promise<MemoryFact[]>;
+    /** wsId 为空/不传 → 全局/兜底记忆；否则取该工作区文件夹自有的记忆 */
+    list(wsId?: string | null): Promise<MemoryFact[]>;
+    add(fact: Partial<MemoryFact> & { text: string }, wsId?: string | null): Promise<MemoryFact[]>;
+    forget(id: string, wsId?: string | null): Promise<MemoryFact[]>;
+    clear(wsId?: string | null): Promise<MemoryFact[]>;
   };
   update: {
     check(force?: boolean): Promise<UpdateInfo>;

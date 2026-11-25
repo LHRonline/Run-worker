@@ -19,6 +19,30 @@
 
 - （暂无）
 
+## [0.0.3d] - 2026-11-25
+
+> 缺陷修复：集中修复「按工作区隔离长期记忆 / 产物」引入后的一系列读写错位与删除一致性问题。无破坏性变更，可直接覆盖安装 0.0.3c。
+
+### Fixed
+- **工作区记忆读写清错位**：`memoryList` / `memoryClear` 的 IPC handler 形参把已消费的 event 当成第一个参数，导致 `wsId` 恒为 `undefined`；表现为工作区里手动添加的记忆读不出来、点「清空记忆」清的却是全局记忆。已修正形参并补 IPC 层参数契约回归测试
+- **产物目录未跟随工作区**：工具产物写入 `<会话绑定工作区>/.runworker-artifacts/<id>/`，但 `convRemove` / `convFiles` / `convClear` 清理与列举时用全局 `ctx.workspace()`。已新增 `workspaceDirForConversation`，统一「写入 → 引用 → 删除」的目录解析；`convRemove` 跨所有工作区逐目录清理以覆盖会话被移动过的情形
+- **清空全部留下孤儿产物**：`clearConversations` 只清一个产物根目录，现支持传入所有工作区目录一并清理；记忆改为按会话前缀逐个清除派生记忆，手动添加的长期记忆不再被一把删光
+- **删除失败造成永久孤儿会话**：`clearConversations` 原先无条件清空索引，Windows 上文件被占用删不掉时，界面提示「请重试」但会话已从列表消失。现以主文件是否仍在磁盘为准保留索引，渲染层删除后重新拉取索引保持一致
+- **已移除工作区的残留记忆**：`forgetMemoryEverywhere` 除当前工作区外，一并遍历本次进程已创建过的记忆目录，工作区移除后残留的派生记忆也能清干净
+- **删除动作提示与状态**：删除 / 清空未完成（有 `failed`）时不再误报「彻底删除」，并提示在列表里重试
+- **回复完成后运行信息丢失**：`run:end` 时用主进程落库的会话整份替换本地消息，导致 assistant 消息 id 变为 `msg_...` 而 `runs[].messageId` 仍指向乐观占位 id；表现为路由标签、耗时、语言提示、思考计时在流式时有、完成即消失，且整列按新 key 重挂载、用户展开的面板被收起。现只对「本地没有占位消息的后台 run」重载正文
+- **`SET_METAS` 解绑字段残留**：展开合并会保留会话对象里旧的 `workspaceId`，移除工作区后任何 `syncMeta` 都会把它写回 `metas`，导致会话从侧栏彻底消失。现按入参 meta 是否带该键决定是否删除
+- **`removeWorkspace` 状态对账**：主进程级联删除子工作区时，只判断活跃 id 是否等于被点 id 会让它悬挂到已删除的子工作区，之后新建的对话绑到死 id 而在侧栏不可见；现以返回的工作区清单对账，并重载被解绑的已加载会话
+- **记忆视图刷新**：`refreshMemory` 及新增 / 删除 / 清空记忆加入请求序号与范围校验，避免快速切换工作区时旧范围结果覆盖新范围；切换范围时先清空列表，避免旧数据顶着新标题。删除 / 清空对话后同步刷新记忆徽标；`correctMessage` 写入的是「会话所属工作区」，不再用该范围全表覆盖当前面板
+- **预览模式记忆隔离**：`bridge.ts` 的 MockApi 原先完全忽略 `wsId`，所有范围共用一份记忆、在工作区点「清空」会误清全局，掩盖了桌面端的隔离逻辑。现按 `memoryByWs` 分桶，且 `add` 保留传入的 `source`，`conversations.remove/clear` 跨所有桶清理派生记忆
+- **边界加固**：`createConversation` 校验 `workspaceId`（失效 id 降级为未绑定，避免新建看不见的孤儿会话）；子工作区名为 `.` / `..` / `...` 时不再外溢到父工作区之外；删除屏障裁剪时优先保留在途 run 的会话 id，避免 >500 会话清空后落库复活幽灵会话
+- **4 个待确认边界问题收口**（均先写失败测试再修，见 `tests/v003d-edge.test.mjs`）：
+  - **连点重复发送**：`send` 的守卫读 `runs`，但 `SET_RUN` 要等 IPC 返回才 dispatch，空窗内连点会重复提交。新增同步 `sendingRef` 锁覆盖空窗，成功落 `SET_RUN` 或失败时释放
+  - **切换会话中止在途 run**：原实现切换时直接 `abort` 上一个会话的生成，属于数据丢失。改为后台继续生成，`run:end` 时照常落库并重载正文
+  - **并发 run 的占位解析**：以 `run:start` 建立 `runId → 占位消息 id` 映射，后续事件按 runId 命中，不依赖「全局唯一 streaming」；补测试验证两个会话并发 streaming 时各自命中
+  - **agentId 未落库**：`newConversation` 原来只把 agentId 改在本地对象上，重启丢失。扩展 `convCreate` IPC 契约（shared 类型 / preload / 主进程 handler / mock bridge 四处）透传 agentId，随会话一起落盘
+- **测试**：新增 `tests/v003d.test.mjs`、`tests/v003d-ipc.test.mjs`、`tests/v003d-mock.test.mjs`、`tests/v003d-edge.test.mjs`；打包 E2E 增加 I3「记忆按范围隔离」断言（14/14）；单测 62/62
+
 ## [0.0.3c] - 2026-11-12
 
 > 显示修复：修复设置页内弹窗（本次更新 / 确认框）被设置页遮挡、必须关闭设置才显示的问题，并统一模态层级、排查同类显示缺陷。无功能变更，可直接覆盖安装 0.0.3b。
@@ -178,7 +202,8 @@
 - Electron 33.4.11 在特定多屏缩放组合下可能出现白屏（后续版本修复）
 - 重复安装后 `PATH` 可能出现重复条目（后续版本修复）
 
-[Unreleased]: https://github.com/LHRonline/run-worker/compare/v0.0.3c...HEAD
+[Unreleased]: https://github.com/LHRonline/run-worker/compare/v0.0.3d...HEAD
+[0.0.3d]: https://github.com/LHRonline/run-worker/compare/v0.0.3c...v0.0.3d
 [0.0.3c]: https://github.com/LHRonline/run-worker/compare/v0.0.3b...v0.0.3c
 [0.0.3b]: https://github.com/LHRonline/run-worker/compare/v0.0.3a...v0.0.3b
 [0.0.3a]: https://github.com/LHRonline/run-worker/compare/v0.0.3...v0.0.3a

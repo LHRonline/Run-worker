@@ -71,8 +71,9 @@ export function Sidebar() {
     return metas.filter((m) => m.title.toLowerCase().includes(q) || m.preview.toLowerCase().includes(q));
   }, [metas, query]);
 
-  const pinned = filtered.filter((m) => m.pinned);
-  const recent = filtered.filter((m) => !m.pinned);
+  // 已归入工作区的对话只在「工作区」树下显示，不再出现在顶部列表，保持独立
+  const pinned = filtered.filter((m) => m.pinned && !m.workspaceId);
+  const recent = filtered.filter((m) => !m.pinned && !m.workspaceId);
 
   const startRename = (meta: ConversationMeta) => {
     setMenu(null);
