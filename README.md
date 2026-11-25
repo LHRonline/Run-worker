@@ -4,7 +4,7 @@
 
 **一个真正能动手的桌面 Agent：多智能体调度 + 直接操作你的电脑 + MCP 连接器 + 本地知识库，并把 token 花在刀刃上。**
 
-![version](https://img.shields.io/badge/version-0.0.3c-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4) ![electron](https://img.shields.io/badge/electron-33.4.11-47848f) ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
+![version](https://img.shields.io/badge/version-0.0.3d-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64-0078d4) ![electron](https://img.shields.io/badge/electron-33.4.11-47848f) ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
 ---
 
@@ -13,7 +13,7 @@
 Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一句目标，它自己判断该由哪个子 Agent 接手、该调哪些工具，然后**真的去执行**——写文件、跑命令、出图、生成 3D 资产、剪辑视频、查你的本地资料库。
 它不绑定单一厂商：DeepSeek、OpenRouter 免费模型、Groq、硅基流动、Ollama 本地，任何兼容 OpenAI 协议的接口都能接。默认开启省 token 策略与中文思考流式展示，日常轻量任务可以做到零成本。
 
-> 当前版本 **0.0.3c**，MIT 协议开源。不知道从哪开始？直接看下面的 [3 分钟上手](#3-分钟上手)，或进 [docs/INSTALL.md](docs/INSTALL.md) 看完整安装教程。
+> 当前版本 **0.0.3d**，MIT 协议开源。不知道从哪开始？直接看下面的 [3 分钟上手](#3-分钟上手)，或进 [docs/INSTALL.md](docs/INSTALL.md) 看完整安装教程。
 
 ---
 
@@ -56,7 +56,19 @@ Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一�
 
 ### 方式一：安装包（推荐）
 
-从 [Releases](https://github.com/LHRonline/run-worker/releases) 下载 `Run-worker-0.0.3c-setup.exe`，双击运行。安装器为 **NSIS 非一键式**：
+从 [Releases](https://github.com/LHRonline/Run-worker/releases/latest) 下载 `Run-worker-0.0.3d-Windows-x64-setup.exe`（约 81 MB），双击运行。文件名里的 `Windows-x64` 就是它的适用系统/架构。
+
+**运行环境（下载前请确认）**
+
+| 项目 | 要求 |
+| --- | --- |
+| 操作系统 | **Windows 10 / 11，仅 64 位**（安装器外壳是 32 位 NSIS，但应用本体是 x64，32 位 Windows 装不上也跑不起来） |
+| CPU 架构 | **x64 / AMD64**（不提供 ARM64 与 32 位版本） |
+| 运行时 | **无需安装**。Electron 33.4.11 已内置 Chromium 与 Node.js，机器不用另装 Node / .NET / Python |
+| 联网 | 首次配置模型渠道需联网；选 Ollama 本地模型可完全离线使用 |
+| 权限 | 普通用户即可，不申请管理员权限 |
+
+安装器为 **NSIS 非一键式**：
 
 - 可选安装目录（默认在用户目录下，不强制 `Program Files`），创建桌面与开始菜单快捷方式（名称 `Run worker`）
 - 不申请管理员权限（`requestedExecutionLevel: asInvoker`），仅写 `HKCU` 注册表
@@ -65,17 +77,19 @@ Run worker 是一个跑在 Windows 桌面上的 AI Agent 客户端。你给一�
 
 静默安装、参数说明、环境变量验证与残留清理见 [docs/INSTALL.md](docs/INSTALL.md)。
 
+> 其他系统（macOS / Linux）与 ARM64 目前没有官方安装包，可按下方「源码运行」自行构建；窗口与工具层针对 Windows 做了适配，其他平台未经测试。
+
 ### 方式二：源码运行
 
-需要 **Node.js 20+**（Electron 33 对 Node 版本有下限要求）。
+需要 **Node.js 20+** 与 npm（仅源码开发/自行构建时需要，用安装包不需要）。推荐 Windows 10/11 x64；其他平台未经测试。
 
 ```bash
-git clone https://github.com/LHRonline/run-worker.git && cd run-worker
+git clone https://github.com/LHRonline/Run-worker.git && cd Run-worker
 npm install
 npm run dev        # 开发模式（Vite + Electron 热更新）
 npm run build      # 编译主进程 + 打包渲染进程
-npm run dist       # 生成 Windows 安装包到 release/
-npm test           # 平台集成用例（node:test，当前 14 项）
+npm run dist       # 生成 Windows x64 安装包到 release/
+npm test           # 单元测试（node:test，当前 62 项）
 ```
 
 ---
@@ -224,10 +238,10 @@ electron-builder.yml                   打包配置
 | `npm run typecheck` | 渲染进程 + 主进程双份 `tsc --noEmit` |
 | `npm run build` | `build:main`（tsc → `dist-electron/`） + `build:renderer`（Vite → `dist/renderer/`） |
 | `npm run pack` | 免安装目录（`--dir`），用于快速验证产物 |
-| `npm run dist` | 生成 NSIS 安装包到 `release/` |
-| `npm test` | 跑 `node --test tests/*.test.mjs`，当前 14 项平台集成用例 |
-| `npm run test:e2e` | 真实 Electron 端到端验证：先 `tsc` + `vite build`，再跑 26 项断言，全绿输出 `ALL PASS (26/26)`，无需任何 API Key；`test:e2e:only` 跳过构建只重跑断言 |
-| `npm run test:packaged` | 打包产物验证：在 `release-<版本>/`、`release/`、`dist/` 中自动选 `app.asar` 最新的一份 win-unpacked（可用 `RUNWORKER_E2E_EXE` 指定），真实启动并做 11 项 CDP 断言，全绿输出 `PACKAGED PASS (11/11)`；需先 `npm run pack` 或 `npm run dist` |
+| `npm run dist` | 生成 Windows x64 的 NSIS 安装包到 `release/` |
+| `npm test` | 跑 `node --test tests/*.test.mjs`，当前 62 项单元测试 |
+| `npm run test:e2e` | 真实 Electron 端到端验证：先 `tsc` + `vite build`，再跑 32 项断言，全绿输出 `ALL PASS (32/32)`，无需任何 API Key；`test:e2e:only` 跳过构建只重跑断言 |
+| `npm run test:packaged` | 打包产物验证：在 `release-<版本>/`、`release/`、`dist/` 中自动选 `app.asar` 最新的一份 win-unpacked（可用 `RUNWORKER_E2E_EXE` 指定），真实启动并做 14 项 CDP 断言，全绿输出 `PACKAGED PASS (14/14)`；需先 `npm run pack` 或 `npm run dist` |
 
 代码规范：TypeScript `strict`，共享类型只写在 `src/shared/`；主进程不直接读写 `window`，渲染进程不直接 `require`；新增 IPC 必须同时改 `src/shared/ipc.ts` 与 `src/preload/index.ts`；文件写入走 `writeJsonAtomic`。
 
